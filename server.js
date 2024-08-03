@@ -6,6 +6,7 @@ import { Channel, Content, Comment, User } from './lib/models/HeadlineModel.js'
 // app config
 dotenv.config();
 const app = express();
+const port  = process.env.PORT || 4000
 
 // Middleware to parse JSON bodies
 app.use(express.json());
@@ -26,13 +27,32 @@ app.get('/History', (req, res) => {
     res.status(200).send("Hello Node Api History");
 });
 
-app.get('/HeadlineNews',async (req,res)=>{
+app.get('/HeadlineNews/Channel',async (req,res)=>{
     try {
         const channels = await Channel.find();
         res.status(200).json(channels);
       } catch (err) {
         console.error('Error fetching channels:', err);
         res.status(500).json({ message: 'Error fetching channels', error: err.message });
+      }
+})
+
+app.get('/HeadlineNews/Content',async (req,res)=>{
+    try {
+        const content = await Content.find();
+        res.status(200).json(content);
+      } catch (err) {
+        console.error('Error fetching contents:', err);
+        res.status(500).json({ message: 'Error fetching contents', error: err.message });
+      }
+})
+app.get('/HeadlineNews/Comment',async (req,res)=>{
+    try {
+        const comment = await Comment.find();
+        res.status(200).json(comment);
+      } catch (err) {
+        console.error('Error fetching contents:', err);
+        res.status(500).json({ message: 'Error fetching contents', error: err.message });
       }
 })
 
@@ -83,8 +103,8 @@ app.post('/HeadlineNews/Channel', async (req, res) => {
 mongoose.connect(process.env.MONGO)
     .then(() => {
         console.log("Connected to database");
-        app.listen(4000, () => {
-            console.log('Server is running on port 4000');
+        app.listen(port, () => {
+            console.log(`Server is running on port ${port}` );
         });
         
     })
