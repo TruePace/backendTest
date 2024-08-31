@@ -9,7 +9,11 @@ import HeadlineNewsCommentRoute from './lib/routes/HeadlineNewsCommentRoute.js'
 import HeadlineNewsJustInRoute from './lib/routes/HeadlineNewsJustInRoute.js'
 import UserRoute from './lib/routes/HeadlineNewsUserRoute.js' // Add this line
 import { Content } from './lib/models/HeadlineModel.js';
+import { initializeApp } from './lib/FirebaseAdmin.js';
 
+
+
+await initializeApp(); 
 
 // app config
 dotenv.config();
