@@ -3,15 +3,15 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import cron from 'node-cron';
-import HeadlineNewsChannelRoute from './lib/routes/HeadlineNewsChannelRoute.js'
-import HeadlineNewsContentRoute from './lib/routes/HeadlineNewsContentRoute.js'
-import HeadlineNewsCommentRoute from './lib/routes/HeadlineNewsCommentRoute.js'
-import HeadlineNewsJustInRoute from './lib/routes/HeadlineNewsJustInRoute.js'
-import UserRoute from './lib/routes/HeadlineNewsUserRoute.js' // Add this line
-import { Content } from './lib/models/HeadlineModel.js';
+import HeadlineNewsChannelRoute from './lib/routes/HeadlineNews/HeadlineNewsChannelRoute.js'
+import HeadlineNewsContentRoute from './lib/routes/HeadlineNews/HeadlineNewsContentRoute.js'
+import HeadlineNewsCommentRoute from './lib/routes/HeadlineNews/HeadlineNewsCommentRoute.js'
+import HeadlineNewsJustInRoute from './lib/routes/HeadlineNews/HeadlineNewsJustInRoute.js'
+import UserRoute from './lib/routes/HeadlineNews/HeadlineNewsUserRoute.js' // Add this line
+import { Content } from './lib/models/HeadlineNews/HeadlineModel.js';
 import { initializeApp } from './lib/FirebaseAdmin.js';
-
-
+import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVideoRoute.js'
+import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/BeyondArticleRoute.js'
 
 await initializeApp(); 
 
@@ -40,16 +40,15 @@ app.use('/api/HeadlineNews/Comment',HeadlineNewsCommentRoute)
 app.use('/api/HeadlineNews/Content',HeadlineNewsContentRoute)
 app.use('/api/HeadlineNews/GetJustIn',HeadlineNewsJustInRoute)
 app.use('/api/users', UserRoute);
+app.use('/api/BeyondVideo', BeyondVideoRoute);
+app.use('/api/BeyondArticle', BeyondArticleRoute);
 
-// app.use('api/HeadlineNews/User',HeadlineNewsUserRoute)
 // api endpoints
 app.get('/', (req, res) => {
     // GET request is to GET DATA from the database
     res.status(200).send("Hello Node Api headline news");
 });
-app.get('api/BeyondHeadline', (req, res) => {
-    res.status(200).send('Hello Beyond get response');
-});
+
 
 app.get('api/MissedJustIn', (req, res) => {
     res.status(200).send("Hello Node Api Missed Just In");
