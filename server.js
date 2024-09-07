@@ -13,6 +13,8 @@ import { initializeApp } from './lib/FirebaseAdmin.js';
 import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVideoRoute.js'
 import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/BeyondArticleRoute.js'
 
+
+
 await initializeApp(); 
 
 // app config
@@ -42,6 +44,7 @@ app.use('/api/HeadlineNews/GetJustIn',HeadlineNewsJustInRoute)
 app.use('/api/users', UserRoute);
 app.use('/api/BeyondVideo', BeyondVideoRoute);
 app.use('/api/BeyondArticle', BeyondArticleRoute);
+
 
 // api endpoints
 app.get('/', (req, res) => {
