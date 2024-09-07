@@ -64,18 +64,6 @@ app.get('api/History', (req, res) => {
 
 
 
-// Database config
-// mongoose.connect(process.env.MONGO)
-//     .then(() => {
-//         console.log("Connected to database");
-//         app.listen(port, () => {
-//             console.log(`Server is running on port ${port}` );
-//         });
-
-// }).catch((error) => {
-//     console.error("Connection failed", error);
-// });
-
 
 // MongoDB connection
 mongoose.connect(process.env.MONGO, {
