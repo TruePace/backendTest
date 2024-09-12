@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import cron from 'node-cron';
+import http from 'http';
+import { Server } from 'socket.io';
 import HeadlineNewsChannelRoute from './lib/routes/HeadlineNews/HeadlineNewsChannelRoute.js'
 import HeadlineNewsContentRoute from './lib/routes/HeadlineNews/HeadlineNewsContentRoute.js'
 import HeadlineNewsCommentRoute from './lib/routes/HeadlineNews/HeadlineNewsCommentRoute.js'
@@ -20,6 +22,15 @@ await initializeApp();
 // app config
 dotenv.config();
 const app = express();
+const server = http.createServer(app);
+ export const io = new Server(server, {
+  cors: {
+    origin: "http://localhost:3000", // Your frontend URL
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
+
 const port  = process.env.PORT || 4000
 const allowedOrigins = ['http://localhost:3000', 'later production url'];
 
@@ -35,6 +46,14 @@ app.use(cors({
       return callback(null, true);
     }
   }));
+
+  io.on('connection', (socket) => {
+    console.log('A user connected');
+    
+    socket.on('disconnect', () => {
+      console.log('User disconnected');
+    });
+  });
 
 // routes
 app.use('/api/HeadlineNews/Channel',HeadlineNewsChannelRoute)
@@ -72,7 +91,7 @@ mongoose.connect(process.env.MONGO, {
   })
   .then(() => {
     console.log('Connected to MongoDB');
-    app.listen(port, () => {
+    server.listen(port, () => {
       console.log(`Server is running on port ${port}`);
     });
   })
