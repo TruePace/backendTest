@@ -121,33 +121,25 @@ mongoose.connect(process.env.MONGO, {
         
  // Set up the cron job after successful database connection
  cron.schedule('* * * * *', async () => {
-    try {
-      const expiredJustInContent = await Content.find({
-        isJustIn: true,
-        justInExpiresAt: { $lte: new Date() }
+  try {
+    const expiredJustInContent = await Content.find({
+      isJustIn: true,
+      justInExpiresAt: { $lte: new Date() }
+    });
+
+    for (let content of expiredJustInContent) {
+      // Update the existing content instead of creating a new one
+      await Content.findByIdAndUpdate(content._id, {
+        isJustIn: false,
+        showInAllChannels: true
       });
-  
-      for (let content of expiredJustInContent) {
-        // Create a new content entry for Headline News
-        const headlineContent = new Content({
-          ...content.toObject(),
-          _id: new mongoose.Types.ObjectId(), // Generate a new ID
-          isJustIn: false,
-          showInAllChannels: true,
-          createdAt: new Date() // Set the creation time to now
-        });
-  
-        await headlineContent.save();
-  
-        // Remove the content from Just In
-        await Content.findByIdAndDelete(content._id);
-      }
-  
-      console.log(`Moved ${expiredJustInContent.length} items from Just In to Headline News`);
-    } catch (error) {
-      console.error('Error in cron job:', error);
     }
-  });
+
+    console.log(`Moved ${expiredJustInContent.length} items from Just In to Headline News`);
+  } catch (error) {
+    console.error('Error in cron job:', error);
+  }
+});
     
 
 
