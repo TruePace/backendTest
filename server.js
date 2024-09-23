@@ -14,7 +14,7 @@ import { Content } from './lib/models/HeadlineNews/HeadlineModel.js';
 import { initializeApp } from './lib/FirebaseAdmin.js';
 import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVideoRoute.js'
 import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/BeyondArticleRoute.js'
-
+import MissedJustInRoute from './lib/routes/Missed_Just_In/MissedJustInRoute.js'
 
 
 await initializeApp(); 
@@ -63,7 +63,7 @@ app.use('/api/HeadlineNews/GetJustIn',HeadlineNewsJustInRoute)
 app.use('/api/users', UserRoute);
 app.use('/api/BeyondVideo', BeyondVideoRoute);
 app.use('/api/BeyondArticle', BeyondArticleRoute);
-
+app.use ('/api/HeadlineNews',MissedJustInRoute)
 
 // api endpoints
 app.get('/', (req, res) => {
