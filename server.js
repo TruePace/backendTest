@@ -17,6 +17,7 @@ import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/Beyo
 import MissedJustInRoute from './lib/routes/Missed_Just_In/MissedJustInRoute.js'
 
 
+
 await initializeApp(); 
 
 // app config
@@ -83,7 +84,6 @@ app.get('api/History', (req, res) => {
 
 
 
-
 // MongoDB connection
 mongoose.connect(process.env.MONGO, {
     serverSelectionTimeoutMS: 5000,
@@ -138,6 +138,15 @@ mongoose.connect(process.env.MONGO, {
     console.log(`Moved ${expiredJustInContent.length} items from Just In to Headline News`);
   } catch (error) {
     console.error('Error in cron job:', error);
+  }
+});
+
+cron.schedule('0 0 * * *', async () => {
+  try {
+    const result = await Content.deleteMany({ headlineExpiresAt: { $lte: new Date() } });
+    console.log(`Deleted ${result.deletedCount} expired Headline News content items.`);
+  } catch (error) {
+    console.error('Error deleting expired content:', error);
   }
 });
     
