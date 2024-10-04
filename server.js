@@ -1,12 +1,11 @@
 import express from 'express';
-import fs from 'fs/promises'
-import { exportUserData } from './lib/Controllers/Beyond_Headline/Export_UserData/ExportUserHeadlineData.js';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors';
-import cron from 'node-cron';
+import cron from  'node-cron'
 import http from 'http';
 import { Server } from 'socket.io';
+import { verifyFirebaseToken } from './lib/Middlewares/AuthMiddleware.js';
 import HeadlineNewsChannelRoute from './lib/routes/HeadlineNews/HeadlineNewsChannelRoute.js'
 import HeadlineNewsContentRoute from './lib/routes/HeadlineNews/HeadlineNewsContentRoute.js'
 import HeadlineNewsCommentRoute from './lib/routes/HeadlineNews/HeadlineNewsCommentRoute.js'
@@ -18,11 +17,13 @@ import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVi
 import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/BeyondArticleRoute.js'
 import MissedJustInRoute from './lib/routes/Missed_Just_In/MissedJustInRoute.js'
 import UserHistoryRoute from './lib/routes/User_History/UserHistoryRoute.js'
-import ExportUserHeadlineDataRoute from './lib/routes/Export_User_Data/ExportUserHeadlineDataRoute.js'
+import ExportUserHeadlineDataEndpoint from './lib/routes/Export_User_Data/ExportUserHeadlineDataEndpoint.js'
+import DataExportService from './lib/routes/Export_User_Data/DataExportService.js';
 
 
 
 await initializeApp(); 
+
 
 // app config
 dotenv.config();
@@ -70,23 +71,13 @@ app.use('/api/BeyondVideo', BeyondVideoRoute);
 app.use('/api/BeyondArticle', BeyondArticleRoute);
 app.use ('/api/HeadlineNews',MissedJustInRoute)
 app.use('/api/history', UserHistoryRoute);
-app.use('/api/data', ExportUserHeadlineDataRoute);
+app.use('/api/data', ExportUserHeadlineDataEndpoint);
 
 // api endpoints
 app.get('/', (req, res) => {
     // GET request is to GET DATA from the database
     res.status(200).send("Hello Node Api headline news");
 });
-
-
-app.get('api/MissedJustIn', (req, res) => {
-    res.status(200).send("Hello Node Api Missed Just In");
-});
-
-app.get('api/History', (req, res) => {
-    res.status(200).send("Hello Node Api History");
-});
-
 
 
 
@@ -124,6 +115,8 @@ mongoose.connect(process.env.MONGO, {
       console.error('Error pinging database:', error);
     }
   }, 300000); // Every 5 minutes
+
+  
         
  // Set up the cron job after successful database connection
  cron.schedule('* * * * *', async () => {
@@ -141,6 +134,7 @@ mongoose.connect(process.env.MONGO, {
       });
     }
 
+    
     console.log(`Moved ${expiredJustInContent.length} items from Just In to Headline News`);
   } catch (error) {
     console.error('Error in cron job:', error);
@@ -156,20 +150,45 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
     
+// setting up a system to regularly update and export the data for your machine learning partner
 
-
-
-
-// Run the export every day at midnight
+await DataExportService.initialize()
+// Schedule full data export every day at midnight
 cron.schedule('0 0 * * *', async () => {
+  console.log('Starting scheduled data export');
   try {
-    const data = await exportUserData();
-    await fs.writeFile('./exported_data.json', JSON.stringify(data));
-    console.log('Data exported successfully');
+    await DataExportService.exportAllData();
   } catch (error) {
-    console.error('Error exporting data:', error);
+    console.error('Scheduled export failed:', error);
   }
 });
+
+// Schedule incremental updates every hour
+cron.schedule('0 * * * *', async () => {
+  console.log('Starting incremental data update');
+  try {
+    // You can implement incremental updates here if needed
+    // This could be useful for updating only the data that has changed since the last export
+  } catch (error) {
+    console.error('Incremental update failed:', error);
+  }
+});
+
+// Add an endpoint to manually trigger data export
+app.post('/api/trigger-export', verifyFirebaseToken, async (req, res) => {
+  try {
+    const exportJob = DataExportService.exportAllData();
+    res.json({ message: 'Export job started' });
+    
+    // Optionally wait for the export to complete
+    await exportJob;
+  } catch (error) {
+    console.error('Manual export failed:', error);
+    res.status(500).json({ error: 'Export failed' });
+  }
+});
+
+
 
 
 
