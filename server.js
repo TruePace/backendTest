@@ -1,4 +1,6 @@
 import express from 'express';
+import fs from 'fs/promises'
+import { exportUserData } from './lib/Controllers/Beyond_Headline/Export_UserData/ExportUserHeadlineData.js';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import cors from 'cors';
@@ -16,6 +18,7 @@ import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVi
 import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/BeyondArticleRoute.js'
 import MissedJustInRoute from './lib/routes/Missed_Just_In/MissedJustInRoute.js'
 import UserHistoryRoute from './lib/routes/User_History/UserHistoryRoute.js'
+import ExportUserHeadlineDataRoute from './lib/routes/Export_User_Data/ExportUserHeadlineDataRoute.js'
 
 
 
@@ -67,6 +70,7 @@ app.use('/api/BeyondVideo', BeyondVideoRoute);
 app.use('/api/BeyondArticle', BeyondArticleRoute);
 app.use ('/api/HeadlineNews',MissedJustInRoute)
 app.use('/api/history', UserHistoryRoute);
+app.use('/api/data', ExportUserHeadlineDataRoute);
 
 // api endpoints
 app.get('/', (req, res) => {
@@ -153,6 +157,19 @@ cron.schedule('0 0 * * *', async () => {
 });
     
 
+
+
+
+// Run the export every day at midnight
+cron.schedule('0 0 * * *', async () => {
+  try {
+    const data = await exportUserData();
+    await fs.writeFile('./exported_data.json', JSON.stringify(data));
+    console.log('Data exported successfully');
+  } catch (error) {
+    console.error('Error exporting data:', error);
+  }
+});
 
 
 
