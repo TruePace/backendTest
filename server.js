@@ -30,6 +30,7 @@ await ExportService.initializeExportService();
 await initializeApp(); 
 
 
+
 // app config
 dotenv.config();
 const app = express();
@@ -44,6 +45,7 @@ const server = http.createServer(app);
 
 const port  = process.env.PORT || 4000
 const allowedOrigins = ['http://localhost:3000', 'later production url'];
+
 
 // Middleware to parse JSON bodies
 app.use(express.json());
@@ -87,11 +89,7 @@ app.use ('/api/HeadlineNews',MissedJustInRoute)
 app.use('/api/history', UserHistoryRoute);
 app.use('/api/data', ExportUserHeadlineDataEndpoint);
 app.use('/api/export', ExportRoute);
-// api endpoints
-app.get('/', (req, res) => {
-    // GET request is to GET DATA from the database
-    res.status(200).send("Hello Node Api headline news");
-});
+
 
 
 
@@ -147,8 +145,6 @@ mongoose.connect(process.env.MONGO, {
         showInAllChannels: true
       });
     }
-
-    
     console.log(`Moved ${expiredJustInContent.length} items from Just In to Headline News`);
   } catch (error) {
     console.error('Error in cron job:', error);
@@ -164,8 +160,9 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
     
-// setting up a system to regularly update and export the data for your machine learning partner
 
+
+// setting up a system to regularly update and export the data for your machine learning partner
 await DataExportService.initialize()
 // Schedule full data export every day at midnight
 cron.schedule('0 0 * * *', async () => {
@@ -176,7 +173,6 @@ cron.schedule('0 0 * * *', async () => {
     console.error('Scheduled export failed:', error);
   }
 });
-
 // Schedule incremental updates every hour
 cron.schedule('0 * * * *', async () => {
   console.log('Starting incremental data update');
@@ -187,7 +183,6 @@ cron.schedule('0 * * * *', async () => {
     console.error('Incremental update failed:', error);
   }
 });
-
 // Add an endpoint to manually trigger data export
 app.post('/api/trigger-export', verifyFirebaseToken, async (req, res) => {
   try {
