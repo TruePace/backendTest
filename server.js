@@ -47,6 +47,24 @@ const port  = process.env.PORT || 4000
 const allowedOrigins = ['http://localhost:3000', 'later production url'];
 
 
+
+
+
+app.set('trust proxy', true);
+
+app.use((req, res, next) => {
+  const ip = 
+    req.headers['x-forwarded-for']?.split(',').shift() || 
+    req.socket?.remoteAddress ||
+    req.ip ||
+    null;
+  
+  req.ipAddress = ip;
+  next();
+});
+
+
+
 // Middleware to parse JSON bodies
 app.use(express.json());
 app.use(cors({
@@ -77,6 +95,8 @@ try {
   console.error('Failed to create export directory:', error);
 }
 
+app.set('trust proxy', true);
+
 // routes
 app.use('/api/HeadlineNews/Channel',HeadlineNewsChannelRoute)
 app.use('/api/HeadlineNews/Comment',HeadlineNewsCommentRoute)
@@ -90,7 +110,7 @@ app.use('/api/history', UserHistoryRoute);
 app.use('/api/data', ExportUserHeadlineDataEndpoint);
 app.use('/api/export', ExportRoute);
 
-
+ 
 
 
 // MongoDB connection
