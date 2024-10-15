@@ -124,7 +124,7 @@ mongoose.connect(process.env.MONGO, {
   })
   .then(() => {
     console.log('Connected to MongoDB');
-    setupChangeStream();
+    setupChangeStream()
     server.listen(port, () => {
       console.log(`Server is running on port ${port}`);
     });
