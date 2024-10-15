@@ -1,0 +1,20 @@
+MongoDB Read-Only Connection String:
+mongodb+srv://Algorithm-Recommendation:AlgoReco24@truepace.34p0ouq.mongodb.net/recentnews?retryWrites=true&w=majority
+
+RabbitMQ Connection URL:
+amqps://hcejlmtl:c3lnip-10muF1yLkifxrMmyGoC9KCsXP@shrimp.rmq.cloudamqp.com/hcejlmtl
+
+API Endpoints:
+Recent Articles: https://yourdomain.com/api/ml-partner/recent-articles
+Recent Videos: https://yourdomain.com/api/ml-partner/recent-videos
+Recent Interactions: https://yourdomain.com/api/ml-partner/recent-interactions
+
+Instructions:
+1. Use the MongoDB connection string for read-only access to the database.
+2. Connect to the RabbitMQ server using the provided URL to receive real-time updates.
+3. Use the API endpoints to fetch recent data as needed.
+
+For security:
+- Do not share these credentials with anyone else.
+- Use secure, encrypted connections (HTTPS/SSL) when accessing the API endpoints.
+- Regularly update your access passwords and inform us immediately of any potential security concerns.

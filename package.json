@@ -12,6 +12,7 @@
   "author": "Adesina Gideon (Creature)",
   "license": "ISC",
   "dependencies": {
+    "amqplib": "^0.10.4",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "csv-writer": "^1.6.0",
