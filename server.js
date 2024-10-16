@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import cron from  'node-cron'
 import http from 'http';
-// import fs from 'fs'
+
 import { Server } from 'socket.io';
 import { verifyFirebaseToken } from './lib/Middlewares/AuthMiddleware.js';
 import HeadlineNewsChannelRoute from './lib/routes/HeadlineNews/HeadlineNewsChannelRoute.js'
@@ -20,15 +20,12 @@ import MissedJustInRoute from './lib/routes/Missed_Just_In/MissedJustInRoute.js'
 import UserHistoryRoute from './lib/routes/User_History/UserHistoryRoute.js'
 import ExportUserHeadlineDataEndpoint from './lib/routes/Export_User_Data_Headline/ExportUserHeadlineDataEndpoint.js'
 import DataExportService from './lib/routes/Export_User_Data_Headline/DataExportService.js';
-// import { ExportService } from './lib/routes/Video_Article_Data_Export/ExportService.js';
-// import ExportRoute  from './lib/routes/Video_Article_Data_Export/ExportRoute.js';
-// import { EXPORT_CONFIG } from './lib/routes/Video_Article_Data_Export/ExportConfig.js'
+
 import { setupChangeStream } from './lib/routes/Direct_ML_Database/ChangeStream.js';
 import MlPartnerRoute from './lib/routes/Direct_ML_Database/MlPartnerRoute.js'
 
 
-// In your server initialization
-// await ExportService.initializeExportService();
+
 
 await initializeApp(); 
 
@@ -89,14 +86,6 @@ app.use(cors({
     });
   });
 
-  //  Add this before your routes setup
-// try {
-//   if (!fs.existsSync(EXPORT_CONFIG.EXPORT_DIRECTORY)) {
-//     fs.mkdirSync(EXPORT_CONFIG.EXPORT_DIRECTORY, { recursive: true });
-//   }
-// } catch (error) {
-//   console.error('Failed to create export directory:', error);
-// }
 
 app.set('trust proxy', true);
 
@@ -111,11 +100,10 @@ app.use('/api/BeyondArticle', BeyondArticleRoute);
 app.use ('/api/HeadlineNews',MissedJustInRoute)
 app.use('/api/history', UserHistoryRoute);
 app.use('/api/data', ExportUserHeadlineDataEndpoint);
-// app.use('/api/export', ExportRoute);
+
 app.use('/api/ml-partner', MlPartnerRoute);
 
  
-
 
 // MongoDB connection
 mongoose.connect(process.env.MONGO, {

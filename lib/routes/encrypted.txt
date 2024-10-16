@@ -5,10 +5,11 @@ RabbitMQ Connection URL:
 amqps://hcejlmtl:c3lnip-10muF1yLkifxrMmyGoC9KCsXP@shrimp.rmq.cloudamqp.com/hcejlmtl
 
 API Endpoints:
-Recent Articles: https://yourdomain.com/api/ml-partner/recent-articles
-Recent Videos: https://yourdomain.com/api/ml-partner/recent-videos
-Recent Interactions: https://yourdomain.com/api/ml-partner/recent-interactions
-
+Recent Articles: https://yourdomain.com/api/ml-partner/articles?page=1&limit=50
+Recent Videos: https://yourdomain.com/api/ml-partner/videos?page=1&limit=50
+Recent Interactions: https://yourdomain.com/api/ml-partner/interactions?page=1&limit=100
+Recent User Data: https://yourdomain.com/api/ml-partner/user-data?page=1&limit=50
+Recent User Interaction Data : https://yourdomain.com/api/ml-partner/user-interaction-data?page=1&limit=50
 Instructions:
 1. Use the MongoDB connection string for read-only access to the database.
 2. Connect to the RabbitMQ server using the provided URL to receive real-time updates.
