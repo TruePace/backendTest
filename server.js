@@ -104,7 +104,6 @@ app.use('/api/data', ExportUserHeadlineDataEndpoint);
 app.use('/api/ml-partner', MlPartnerRoute);
 
  
-
 // MongoDB connection
 mongoose.connect(process.env.MONGO, {
     serverSelectionTimeoutMS: 5000,
