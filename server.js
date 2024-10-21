@@ -44,7 +44,7 @@ const server = http.createServer(app);
 });
 
 const port  = process.env.PORT || 4000
-const allowedOrigins = ['http://localhost:3000', 'later production url'];
+const allowedOrigins = ['http://localhost:3000', 'later production url for frontend again'];
 
 
 
