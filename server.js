@@ -1,10 +1,11 @@
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import path from 'path';
 import express from 'express';
 import mongoose from 'mongoose';
-import dotenv from 'dotenv';
 import cors from 'cors';
 import cron from  'node-cron'
 import http from 'http';
-
 import { Server } from 'socket.io';
 import { verifyFirebaseToken } from './lib/Middlewares/AuthMiddleware.js';
 import HeadlineNewsChannelRoute from './lib/routes/HeadlineNews/HeadlineNewsChannelRoute.js'
@@ -24,6 +25,12 @@ import DataExportService from './lib/routes/Export_User_Data_Headline/DataExport
 import { setupChangeStream } from './lib/routes/Direct_ML_Database/ChangeStream.js';
 import MlPartnerRoute from './lib/routes/Direct_ML_Database/MlPartnerRoute.js'
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, '.env') });
+
+// console.log('FIREBASE_SERVICE_ACCOUNT:', process.env.FIREBASE_SERVICE_ACCOUNT);
 
 
 
