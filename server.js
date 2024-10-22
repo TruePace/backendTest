@@ -52,7 +52,7 @@ export const io = new Server(server, {
 const port = process.env.PORT || 4000;
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://ikea-better.true.app'  // Added your Vercel URL
+  'https://ikea-true.vercel.app'  // Added your Vercel URL
 ];
 
 
