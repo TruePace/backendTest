@@ -39,20 +39,21 @@ await initializeApp();
 
 
 // app config
-dotenv.config();
 const app = express();
 const server = http.createServer(app);
- export const io = new Server(server, {
+export const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000", // Your frontend URL
+    origin: ["http://localhost:3000", "https://ikea-better.vercel.app"], // Updated to include Vercel URL
     methods: ["GET", "POST"],
     credentials: true
   }
 });
 
-const port  = process.env.PORT || 4000
-const allowedOrigins = ['http://localhost:3000', 'later production url for frontend again'];
-
+const port = process.env.PORT || 4000;
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://ikea-better.vercel.app'  // Added your Vercel URL
+];
 
 
 
@@ -72,18 +73,23 @@ app.use((req, res, next) => {
 
 
 
-// Middleware to parse JSON bodies
+// Middleware
 app.use(express.json());
 app.use(cors({
-    origin: function(origin, callback){
-      if(!origin) return callback(null, true);
-      if(allowedOrigins.indexOf(origin) === -1){
-        var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-        return callback(new Error(msg), false);
-      }
-      return callback(null, true);
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
     }
-  }));
+    return callback(null, true);
+  },
+  credentials: true, // Allow credentials
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Specify allowed methods
+  allowedHeaders: ['Content-Type', 'Authorization'] // Specify allowed headers
+}));
 
   io.on('connection', (socket) => {
     console.log('A user connected');
