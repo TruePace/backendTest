@@ -43,7 +43,7 @@ const app = express();
 const server = http.createServer(app);
 export const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "https://ikea-better.vercel.app"], // Updated to include Vercel URL
+    origin: ["http://localhost:3000", "https://ikea-true.vercel.app"], // Updated to include Vercel URL
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -52,7 +52,7 @@ export const io = new Server(server, {
 const port = process.env.PORT || 4000;
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://ikea-better.vercel.app'  // Added your Vercel URL
+  'https://ikea-better.true.app'  // Added your Vercel URL
 ];
 
 
