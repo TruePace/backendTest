@@ -21,6 +21,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "firebase-admin": "^12.4.0",
+    "geoip-lite": "^1.4.10",
     "mongodb": "^6.7.0",
     "mongoose": "^8.4.1",
     "node-cron": "^3.0.3",
