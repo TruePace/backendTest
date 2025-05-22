@@ -23,6 +23,8 @@ import ExportUserHeadlineDataEndpoint from './lib/routes/Export_User_Data_Headli
 import DataExportService from './lib/routes/Export_User_Data_Headline/DataExportService.js';
 import { setupChangeStream } from './lib/routes/Direct_ML_Database/ChangeStream.js';
 import MlPartnerRoute from './lib/routes/Direct_ML_Database/MlPartnerRoute.js'
+import ExternalNewsRoute from './lib/routes/HeadlineNews/ExternalNewsRoute.js'
+import LocationRoute from './lib/routes/HeadlineNews/LocationRoute.js'
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -104,6 +106,8 @@ app.set('trust proxy', true);
 
 // routes
 app.use('/api/HeadlineNews/Channel',HeadlineNewsChannelRoute)
+app.use ('/api/HeadlineNews/Channel',ExternalNewsRoute)
+app.use('/api/location', LocationRoute);
 app.use('/api/HeadlineNews/Comment',HeadlineNewsCommentRoute)
 app.use('/api/HeadlineNews/Content',HeadlineNewsContentRoute)
 app.use('/api/HeadlineNews/GetJustIn',HeadlineNewsJustInRoute)
@@ -176,6 +180,7 @@ mongoose.connect(process.env.MONGO, {
   }
 });
 
+
 cron.schedule('0 0 * * *', async () => {
   try {
     const result = await Content.deleteMany({ headlineExpiresAt: { $lte: new Date() } });
@@ -185,8 +190,7 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
     
-
-
+   
 // setting up a system to regularly update and export the data for your machine learning partner
 await DataExportService.initialize()
 // Schedule full data export every day at midnight
@@ -221,9 +225,6 @@ app.post('/api/trigger-export', verifyFirebaseToken, async (req, res) => {
     res.status(500).json({ error: 'Export failed' });
   }
 });
-
-
-
 
 
     app.use((err, req, res, next) => {
