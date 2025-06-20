@@ -19,8 +19,6 @@ import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVi
 import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/BeyondArticleRoute.js'
 import MissedJustInRoute from './lib/routes/Missed_Just_In/MissedJustInRoute.js'
 import UserHistoryRoute from './lib/routes/User_History/UserHistoryRoute.js'
-import ExportUserHeadlineDataEndpoint from './lib/routes/Export_User_Data_Headline/ExportUserHeadlineDataEndpoint.js'
-import DataExportService from './lib/routes/Export_User_Data_Headline/DataExportService.js';
 import { setupChangeStream } from './lib/routes/Direct_ML_Database/ChangeStream.js';
 import MlPartnerRoute from './lib/routes/Direct_ML_Database/MlPartnerRoute.js'
 import ExternalNewsRoute from './lib/routes/HeadlineNews/ExternalNewsRoute.js'
@@ -73,7 +71,6 @@ app.use((req, res, next) => {
 });
 
 
-
 // Middleware
 app.use(express.json());
 app.use(cors({
@@ -116,11 +113,9 @@ app.use('/api/BeyondVideo', BeyondVideoRoute);
 app.use('/api/BeyondArticle', BeyondArticleRoute);
 app.use ('/api/HeadlineNews',MissedJustInRoute)
 app.use('/api/history', UserHistoryRoute);
-app.use('/api/data', ExportUserHeadlineDataEndpoint);
-
 app.use('/api/ml-partner', MlPartnerRoute);
 
- 
+
 // MongoDB connection
 mongoose.connect(process.env.MONGO, {
     serverSelectionTimeoutMS: 5000,
@@ -189,42 +184,7 @@ cron.schedule('0 0 * * *', async () => {
     console.error('Error deleting expired content:', error);
   }
 });
-    
-   
-// setting up a system to regularly update and export the data for your machine learning partner
-await DataExportService.initialize()
-// Schedule full data export every day at midnight
-cron.schedule('0 0 * * *', async () => {
-  console.log('Starting scheduled data export');
-  try {
-    await DataExportService.exportAllData();
-  } catch (error) {
-    console.error('Scheduled export failed:', error);
-  }
-});
-// Schedule incremental updates every hour
-cron.schedule('0 * * * *', async () => {
-  console.log('Starting incremental data update');
-  try {
-    // You can implement incremental updates here if needed
-    // This could be useful for updating only the data that has changed since the last export
-  } catch (error) {
-    console.error('Incremental update failed:', error);
-  }
-});
-// Add an endpoint to manually trigger data export
-app.post('/api/trigger-export', verifyFirebaseToken, async (req, res) => {
-  try {
-    const exportJob = DataExportService.exportAllData();
-    res.json({ message: 'Export job started' });
-    
-    // Optionally wait for the export to complete
-    await exportJob;
-  } catch (error) {
-    console.error('Manual export failed:', error);
-    res.status(500).json({ error: 'Export failed' });
-  }
-});
+
 
 
     app.use((err, req, res, next) => {
