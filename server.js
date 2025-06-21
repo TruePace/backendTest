@@ -154,8 +154,8 @@ mongoose.connect(process.env.MONGO, {
 
   
         
- // Set up the cron job after successful database connection
- cron.schedule('* * * * *', async () => {
+ // Move expired Just In content to Headlines (runs every minute)
+cron.schedule('* * * * *', async () => {
   try {
     const expiredJustInContent = await Content.find({
       isJustIn: true,
@@ -169,19 +169,61 @@ mongoose.connect(process.env.MONGO, {
         showInAllChannels: true
       });
     }
-    console.log(`Moved ${expiredJustInContent.length} items from Just In to Headline News`);
+    
+    if (expiredJustInContent.length > 0) {
+      console.log(`Moved ${expiredJustInContent.length} items from Just In to Headline News`);
+    }
   } catch (error) {
-    console.error('Error in cron job:', error);
+    console.error('Error in Just In to Headlines cron job:', error);
   }
 });
 
-
+// Delete expired content with different logic for internal vs external (runs daily at midnight)
 cron.schedule('0 0 * * *', async () => {
   try {
-    const result = await Content.deleteMany({ headlineExpiresAt: { $lte: new Date() } });
-    console.log(`Deleted ${result.deletedCount} expired Headline News content items.`);
+    const now = new Date();
+    
+    // Delete internal content expired after 24 hours
+    const expiredInternalResult = await Content.deleteMany({ 
+      source: { $ne: 'external' }, // Internal content (not external)
+      headlineExpiresAt: { $lte: now } 
+    });
+    
+    // Delete external content expired after 48 hours
+    const expiredExternalResult = await Content.deleteMany({ 
+      source: 'external',
+      headlineExpiresAt: { $lte: now } 
+    });
+    
+    const totalDeleted = expiredInternalResult.deletedCount + expiredExternalResult.deletedCount;
+    
+    console.log(`Deleted ${expiredInternalResult.deletedCount} expired internal content items (24hr rule).`);
+    console.log(`Deleted ${expiredExternalResult.deletedCount} expired external content items (48hr rule).`);
+    console.log(`Total deleted: ${totalDeleted} expired Headline News content items.`);
+    
   } catch (error) {
     console.error('Error deleting expired content:', error);
+  }
+});
+
+// Optional: Add a more frequent cleanup for external content (every 6 hours)
+// This ensures external content cleanup doesn't wait for daily cron
+cron.schedule('0 */6 * * *', async () => {
+  try {
+    const now = new Date();
+    
+    // Clean up only external content that has exceeded 48 hours
+    const expiredExternalResult = await Content.deleteMany({ 
+      source: 'external',
+      headlineExpiresAt: { $lte: now } 
+    });
+    
+    if (expiredExternalResult.deletedCount > 0) {
+      console.log(`[6hr cleanup] Deleted ${expiredExternalResult.deletedCount} expired external content items (48hr rule).`);
+    }
+    
+  } catch (error) {
+    console.error('Error in 6-hour external content cleanup:', error);
   }
 });
 
