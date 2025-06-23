@@ -23,6 +23,9 @@ import { setupChangeStream } from './lib/routes/Direct_ML_Database/ChangeStream.
 import MlPartnerRoute from './lib/routes/Direct_ML_Database/MlPartnerRoute.js'
 import ExternalNewsRoute from './lib/routes/HeadlineNews/ExternalNewsRoute.js'
 import LocationRoute from './lib/routes/HeadlineNews/LocationRoute.js'
+// Import CleanupService
+
+import { CleanupService,cleanupRoutes } from './lib/routes/HeadlineNews/CleanupService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,11 +34,7 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 
 // console.log('FIREBASE_SERVICE_ACCOUNT:', process.env.FIREBASE_SERVICE_ACCOUNT);
  
-
-
 await initializeApp(); 
-
-
 
 // app config
 const app = express();
@@ -54,9 +53,6 @@ const allowedOrigins = [
   'https://ikea-true.vercel.app'  // Added your Vercel URL
 ];
 
-
-
-
 app.set('trust proxy', true);
 
 app.use((req, res, next) => {
@@ -69,7 +65,6 @@ app.use((req, res, next) => {
   req.ipAddress = ip;
   next();
 });
-
 
 // Middleware
 app.use(express.json());
@@ -89,16 +84,14 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'] // Specify allowed headers
 }));
 
-  io.on('connection', (socket) => {
-    console.log('A user connected');
-    
-    socket.on('disconnect', () => {
-      console.log('User disconnected');
-    });
-  });
-
-
+io.on('connection', (socket) => {
+  console.log('A user connected');
   
+  socket.on('disconnect', () => {
+    console.log('User disconnected');
+  });
+});
+
 app.set('trust proxy', true);
 
 // routes
@@ -115,6 +108,10 @@ app.use ('/api/HeadlineNews',MissedJustInRoute)
 app.use('/api/history', UserHistoryRoute);
 app.use('/api/ml-partner', MlPartnerRoute);
 
+// Add cleanup routes
+const router = express.Router();
+cleanupRoutes(router);
+app.use('/api/admin', router);
 
 // MongoDB connection
 mongoose.connect(process.env.MONGO, {
@@ -123,7 +120,11 @@ mongoose.connect(process.env.MONGO, {
   })
   .then(() => {
     console.log('Connected to MongoDB');
-    setupChangeStream()
+    setupChangeStream();
+    
+    // Start periodic cleanup after DB connection
+    CleanupService.startPeriodicCleanup();
+    
     server.listen(port, () => {
       console.log(`Server is running on port ${port}`);
     });
@@ -152,9 +153,7 @@ mongoose.connect(process.env.MONGO, {
     }
   }, 300000); // Every 5 minutes
 
-  
-        
- // Move expired Just In content to Headlines (runs every minute)
+// Move expired Just In content to Headlines (runs every minute)
 cron.schedule('* * * * *', async () => {
   try {
     const expiredJustInContent = await Content.find({
@@ -178,9 +177,21 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// Delete expired content with different logic for internal vs external (runs daily at midnight)
+// Enhanced cleanup with CleanupService - runs daily at midnight
 cron.schedule('0 0 * * *', async () => {
   try {
+    console.log('🌙 Running daily cleanup with CleanupService...');
+    
+    // Run the full cleanup service
+    const cleanupResult = await CleanupService.runFullCleanup();
+    
+    if (cleanupResult.success) {
+      console.log(`✅ Daily cleanup completed: ${cleanupResult.duplicatesRemoved} duplicates removed, ${cleanupResult.expiredRemoved} expired items removed`);
+    } else {
+      console.error('❌ Daily cleanup failed:', cleanupResult.error);
+    }
+    
+    // Keep your existing logic as backup
     const now = new Date();
     
     // Delete internal content expired after 24 hours
@@ -202,34 +213,45 @@ cron.schedule('0 0 * * *', async () => {
     console.log(`Total deleted: ${totalDeleted} expired Headline News content items.`);
     
   } catch (error) {
-    console.error('Error deleting expired content:', error);
+    console.error('Error in daily cleanup cron job:', error);
   }
 });
 
-// Optional: Add a more frequent cleanup for external content (every 6 hours)
-// This ensures external content cleanup doesn't wait for daily cron
+// Enhanced 6-hour cleanup with duplicate removal
 cron.schedule('0 */6 * * *', async () => {
   try {
-    const now = new Date();
+    console.log('🕕 Running 6-hour cleanup...');
     
-    // Clean up only external content that has exceeded 48 hours
+    // Remove duplicates first
+    const duplicatesRemoved = await CleanupService.removeDuplicateExternalContent();
+    
+    // Then clean expired external content
+    const now = new Date();
     const expiredExternalResult = await Content.deleteMany({ 
       source: 'external',
       headlineExpiresAt: { $lte: now } 
     });
     
-    if (expiredExternalResult.deletedCount > 0) {
-      console.log(`[6hr cleanup] Deleted ${expiredExternalResult.deletedCount} expired external content items (48hr rule).`);
+    if (expiredExternalResult.deletedCount > 0 || duplicatesRemoved > 0) {
+      console.log(`[6hr cleanup] Removed ${duplicatesRemoved} duplicates, deleted ${expiredExternalResult.deletedCount} expired external content items`);
     }
     
   } catch (error) {
-    console.error('Error in 6-hour external content cleanup:', error);
+    console.error('Error in 6-hour cleanup:', error);
   }
 });
 
+// Add a cron job to update channel statistics daily at 3 AM
+cron.schedule('0 3 * * *', async () => {
+  try {
+    console.log('📊 Running daily channel statistics update...');
+    await CleanupService.updateChannelStats();
+  } catch (error) {
+    console.error('Error updating channel statistics:', error);
+  }
+});
 
-
-    app.use((err, req, res, next) => {
-        console.error(err.stack);
-        res.status(500).send('Something broke!');
-      });
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).send('Something broke!');
+});
