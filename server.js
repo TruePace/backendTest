@@ -12,7 +12,7 @@ import HeadlineNewsChannelRoute from './lib/routes/HeadlineNews/HeadlineNewsChan
 import HeadlineNewsContentRoute from './lib/routes/HeadlineNews/HeadlineNewsContentRoute.js'
 import HeadlineNewsCommentRoute from './lib/routes/HeadlineNews/HeadlineNewsCommentRoute.js'
 import HeadlineNewsJustInRoute from './lib/routes/HeadlineNews/HeadlineNewsJustInRoute.js'
-import UserRoute from './lib/routes/HeadlineNews/HeadlineNewsUserRoute.js' // Add this line
+import UserRoute from './lib/routes/HeadlineNews/HeadlineNewsUserRoute.js'
 import { Content } from './lib/models/HeadlineNews/HeadlineModel.js';
 import { initializeApp } from './lib/FirebaseAdmin.js';
 import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVideoRoute.js'
@@ -23,17 +23,55 @@ import { setupChangeStream } from './lib/routes/Direct_ML_Database/ChangeStream.
 import MlPartnerRoute from './lib/routes/Direct_ML_Database/MlPartnerRoute.js'
 import ExternalNewsRoute from './lib/routes/HeadlineNews/ExternalNewsRoute.js'
 import LocationRoute from './lib/routes/HeadlineNews/LocationRoute.js'
-// Import CleanupService
+import { CleanupService, cleanupRoutes } from './lib/routes/HeadlineNews/CleanupService.js';
 
-import { CleanupService,cleanupRoutes } from './lib/routes/HeadlineNews/CleanupService.js';
+// Import the new server-side external news service
+import { 
+  fetchExternalNewsServer, 
+  refreshExternalChannelsServer,
+  createExternalNewsRoute 
+} from './lib/routes/HeadlineNews/ServerExternalNewsService.js'
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-// console.log('FIREBASE_SERVICE_ACCOUNT:', process.env.FIREBASE_SERVICE_ACCOUNT);
- 
+console.log('🔍 Detailed Environment Debug:');
+console.log('Raw PARTNER_API_URL:', `"${process.env.PARTNER_API_URL}"`);
+console.log('PARTNER_API_URL type:', typeof process.env.PARTNER_API_URL);
+console.log('PARTNER_API_URL length:', process.env.PARTNER_API_URL?.length);
+console.log('PARTNER_API_URL char codes:', process.env.PARTNER_API_URL?.split('').map(c => c.charCodeAt(0)));
+
+// Test if the value has hidden characters
+if (process.env.PARTNER_API_URL) {
+  const cleaned = process.env.PARTNER_API_URL.trim();
+  console.log('Cleaned PARTNER_API_URL:', `"${cleaned}"`);
+  console.log('Original vs Cleaned same?', process.env.PARTNER_API_URL === cleaned);
+}
+
+// Check .env file content directly
+import fs from 'fs';
+
+
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf8');
+  console.log('📄 .env file content:');
+  console.log(envContent);
+  
+  // Look for the specific line
+  const partnerApiLine = envContent.split('\n').find(line => line.includes('PARTNER_API_URL'));
+  if (partnerApiLine) {
+    console.log('🔍 PARTNER_API_URL line:', `"${partnerApiLine}"`);
+    console.log('🔍 Line char codes:', partnerApiLine.split('').map(c => c.charCodeAt(0)));
+  }
+} else {
+  console.log('❌ .env file not found at:', envPath);
+}
+
+
 await initializeApp(); 
 
 // app config
@@ -41,7 +79,7 @@ const app = express();
 const server = http.createServer(app);
 export const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "https://ikea-true.vercel.app"], // Updated to include Vercel URL
+    origin: ["http://localhost:3000", "https://ikea-true.vercel.app"],
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -50,7 +88,7 @@ export const io = new Server(server, {
 const port = process.env.PORT || 4000;
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://ikea-true.vercel.app'  // Added your Vercel URL
+  'https://ikea-true.vercel.app'
 ];
 
 app.set('trust proxy', true);
@@ -70,7 +108,6 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) === -1) {
@@ -79,9 +116,9 @@ app.use(cors({
     }
     return callback(null, true);
   },
-  credentials: true, // Allow credentials
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Specify allowed methods
-  allowedHeaders: ['Content-Type', 'Authorization'] // Specify allowed headers
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 io.on('connection', (socket) => {
@@ -109,9 +146,79 @@ app.use('/api/history', UserHistoryRoute);
 app.use('/api/ml-partner', MlPartnerRoute);
 
 // Add cleanup routes
-const router = express.Router();
-cleanupRoutes(router);
-app.use('/api/admin', router);
+const cleanupRouter = express.Router();
+cleanupRoutes(cleanupRouter);
+app.use('/api/admin', cleanupRouter);
+
+// Add external news routes - PLACE THIS BEFORE THE MONGODB CONNECTION
+const externalNewsRouter = express.Router();
+
+// Manual fetch endpoint
+externalNewsRouter.post('/fetch-external-news', async (req, res) => {
+  try {
+    console.log('📡 Manual external news fetch triggered');
+    
+    // Get IP from request body or use the request IP
+    const ipInfo = req.body.ipInfo || { ip: req.ipAddress || '8.8.8.8' };
+    
+    const results = await fetchExternalNewsServer(ipInfo);
+    
+    res.json({
+      success: true,
+      articlesProcessed: results.length,
+      message: `Successfully processed ${results.length} external news articles`
+    });
+  } catch (error) {
+    console.error('❌ Error in manual fetch:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Refresh channels endpoint
+externalNewsRouter.post('/refresh-external-channels', async (req, res) => {
+  try {
+    console.log('📡 Manual channels refresh triggered');
+    
+    const success = await refreshExternalChannelsServer();
+    
+    res.json({
+      success,
+      message: success ? 'External channels refreshed successfully' : 'Failed to refresh external channels'
+    });
+  } catch (error) {
+    console.error('❌ Error in manual channels refresh:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Status endpoint (optional)
+externalNewsRouter.get('/status', async (req, res) => {
+  try {
+    // You can add logic here to return status info
+    const status = {
+      serviceStatus: 'active',
+      lastCronRun: new Date(),
+      partnerApiUrl: process.env.PARTNER_API_URL ? 'configured' : 'not configured'
+    };
+    
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Mount the external news routes
+app.use('/api/external-news', externalNewsRouter);
+
 
 // MongoDB connection
 mongoose.connect(process.env.MONGO, {
@@ -125,6 +232,9 @@ mongoose.connect(process.env.MONGO, {
     // Start periodic cleanup after DB connection
     CleanupService.startPeriodicCleanup();
     
+    // Initialize external channels on startup
+    refreshExternalChannelsServer();
+    
     server.listen(port, () => {
       console.log(`Server is running on port ${port}`);
     });
@@ -134,24 +244,26 @@ mongoose.connect(process.env.MONGO, {
     process.exit(1);
   });
   
-  // Reconnection logic
-  mongoose.connection.on('disconnected', () => {
-    console.log('Lost MongoDB connection. Reconnecting...');
-    mongoose.connect(process.env.MONGO, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-    });
+// Reconnection logic
+mongoose.connection.on('disconnected', () => {
+  console.log('Lost MongoDB connection. Reconnecting...');
+  mongoose.connect(process.env.MONGO, {
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
   });
-  
-  // Heartbeat mechanism
-  setInterval(async () => {
-    try {
-      await mongoose.connection.db.admin().ping();
-      console.log('Database connection is alive');
-    } catch (error) {
-      console.error('Error pinging database:', error);
-    }
-  }, 300000); // Every 5 minutes
+});
+
+// Heartbeat mechanism
+setInterval(async () => {
+  try {
+    await mongoose.connection.db.admin().ping();
+    console.log('Database connection is alive');
+  } catch (error) {
+    console.error('Error pinging database:', error);
+  }
+}, 300000); // Every 5 minutes
+
+// ===== CRON JOBS =====
 
 // Move expired Just In content to Headlines (runs every minute)
 cron.schedule('* * * * *', async () => {
@@ -162,7 +274,6 @@ cron.schedule('* * * * *', async () => {
     });
 
     for (let content of expiredJustInContent) {
-      // Update the existing content instead of creating a new one
       await Content.findByIdAndUpdate(content._id, {
         isJustIn: false,
         showInAllChannels: true
@@ -177,12 +288,50 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
+// **NEW: Fetch external news every 30 minutes**
+cron.schedule('*/30 * * * *', async () => {
+  try {
+    console.log('📰 [CRON] Running 30-minute external news fetch...');
+    
+    // Use a default IP or get from environment
+    const defaultIpInfo = { ip: process.env.DEFAULT_IP || '8.8.8.8' };
+    
+    const results = await fetchExternalNewsServer(defaultIpInfo);
+    
+    if (results.length > 0) {
+      console.log(`✅ [CRON] Successfully processed ${results.length} external news articles`);
+    } else {
+      console.log('ℹ️ [CRON] No new external news articles to process');
+    }
+    
+  } catch (error) {
+    console.error('❌ [CRON] Error in external news fetch:', error);
+  }
+});
+
+// **NEW: Refresh external channels every 6 hours**
+cron.schedule('0 */6 * * *', async () => {
+  try {
+    console.log('📺 [CRON] Running 6-hour external channels refresh...');
+    
+    const success = await refreshExternalChannelsServer();
+    
+    if (success) {
+      console.log('✅ [CRON] External channels refreshed successfully');
+    } else {
+      console.log('❌ [CRON] Failed to refresh external channels');
+    }
+    
+  } catch (error) {
+    console.error('❌ [CRON] Error in external channels refresh:', error);
+  }
+});
+
 // Enhanced cleanup with CleanupService - runs daily at midnight
 cron.schedule('0 0 * * *', async () => {
   try {
     console.log('🌙 Running daily cleanup with CleanupService...');
     
-    // Run the full cleanup service
     const cleanupResult = await CleanupService.runFullCleanup();
     
     if (cleanupResult.success) {
@@ -191,16 +340,14 @@ cron.schedule('0 0 * * *', async () => {
       console.error('❌ Daily cleanup failed:', cleanupResult.error);
     }
     
-    // Keep your existing logic as backup
+    // Keep existing logic as backup
     const now = new Date();
     
-    // Delete internal content expired after 24 hours
     const expiredInternalResult = await Content.deleteMany({ 
-      source: { $ne: 'external' }, // Internal content (not external)
+      source: { $ne: 'external' },
       headlineExpiresAt: { $lte: now } 
     });
     
-    // Delete external content expired after 48 hours
     const expiredExternalResult = await Content.deleteMany({ 
       source: 'external',
       headlineExpiresAt: { $lte: now } 
@@ -222,10 +369,8 @@ cron.schedule('0 */6 * * *', async () => {
   try {
     console.log('🕕 Running 6-hour cleanup...');
     
-    // Remove duplicates first
     const duplicatesRemoved = await CleanupService.removeDuplicateExternalContent();
     
-    // Then clean expired external content
     const now = new Date();
     const expiredExternalResult = await Content.deleteMany({ 
       source: 'external',
@@ -241,7 +386,7 @@ cron.schedule('0 */6 * * *', async () => {
   }
 });
 
-// Add a cron job to update channel statistics daily at 3 AM
+// Update channel statistics daily at 3 AM
 cron.schedule('0 3 * * *', async () => {
   try {
     console.log('📊 Running daily channel statistics update...');
@@ -250,7 +395,6 @@ cron.schedule('0 3 * * *', async () => {
     console.error('Error updating channel statistics:', error);
   }
 });
-
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send('Something broke!');
