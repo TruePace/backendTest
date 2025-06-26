@@ -32,7 +32,6 @@ import {
   createExternalNewsRoute 
 } from './lib/routes/HeadlineNews/ServerExternalNewsService.js'
 
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -54,7 +53,6 @@ if (process.env.PARTNER_API_URL) {
 // Check .env file content directly
 import fs from 'fs';
 
-
 const envPath = path.join(__dirname, '.env');
 if (fs.existsSync(envPath)) {
   const envContent = fs.readFileSync(envPath, 'utf8');
@@ -71,8 +69,48 @@ if (fs.existsSync(envPath)) {
   console.log('❌ .env file not found at:', envPath);
 }
 
-
 await initializeApp(); 
+
+// ENHANCED: Global variables with better tracking
+global.lastNewsFetch = 0;
+global.serverStartTime = Date.now();
+global.isFetching = false; // Prevent concurrent fetches
+
+// ENHANCED: Better fresh news checking
+const shouldFetchFreshNews = () => {
+  const now = Date.now();
+  const lastFetch = global.lastNewsFetch;
+  const thirtyMinutes = 30 * 60 * 1000;
+  
+  return lastFetch === 0 || (now - lastFetch) > thirtyMinutes;
+};
+
+// ENHANCED: Force fresh news function with better error handling
+const forceNewsFetch = async (ipInfo = { ip: '8.8.8.8' }) => {
+  if (global.isFetching) {
+    console.log('🔄 News fetch already in progress, skipping...');
+    return 0;
+  }
+  
+  try {
+    global.isFetching = true;
+    global.lastNewsFetch = Date.now();
+    console.log('🚀 Starting force news fetch...');
+    
+    const results = await fetchExternalNewsServer(ipInfo);
+    
+    console.log(`✅ Force fetch completed: ${results.length} articles`);
+    return results.length;
+    
+  } catch (error) {
+    console.error('❌ Force fetch failed:', error);
+    // Reset timestamp to allow retry sooner
+    global.lastNewsFetch = Date.now() - (25 * 60 * 1000); // Try again in 5 minutes
+    return 0;
+  } finally {
+    global.isFetching = false;
+  }
+};
 
 // app config
 const app = express();
@@ -131,6 +169,51 @@ io.on('connection', (socket) => {
 
 app.set('trust proxy', true);
 
+// ENHANCED: Enhanced middleware that actually triggers fetch
+const ensureFreshNewsMiddleware = async (req, res, next) => {
+  try {
+    // Skip if already fetching
+    if (global.isFetching) {
+      console.log('🔄 Fetch already in progress, skipping...');
+      return next();
+    }
+
+    if (shouldFetchFreshNews()) {
+      console.log('🚀 Server needs fresh news - triggering immediate fetch...');
+      
+      // Set fetching flag and update timestamp
+      global.isFetching = true;
+      global.lastNewsFetch = Date.now();
+      
+      const ipInfo = { ip: req.ipAddress || '8.8.8.8' };
+      
+      // IMPORTANT: Don't await - let it run in background
+      fetchExternalNewsServer(ipInfo)
+        .then(results => {
+          console.log(`✅ Background fetch completed: ${results.length} articles`);
+          global.isFetching = false;
+        })
+        .catch(error => {
+          console.error('❌ Background fetch failed:', error);
+          global.isFetching = false;
+          // Reset timestamp for retry in 5 minutes
+          global.lastNewsFetch = Date.now() - (25 * 60 * 1000);
+        });
+    }
+    
+    next();
+  } catch (error) {
+    console.error('❌ Fresh news middleware error:', error);
+    global.isFetching = false;
+    next();
+  }
+};
+
+// ENHANCED: Apply middleware to ALL content routes
+app.use('/api/HeadlineNews/Channel', ensureFreshNewsMiddleware);
+app.use('/api/HeadlineNews/Content', ensureFreshNewsMiddleware);
+app.use('/api/HeadlineNews/GetJustIn', ensureFreshNewsMiddleware);
+
 // routes
 app.use('/api/HeadlineNews/Channel',HeadlineNewsChannelRoute)
 app.use ('/api/HeadlineNews/Channel',ExternalNewsRoute)
@@ -144,7 +227,6 @@ app.use('/api/BeyondArticle', BeyondArticleRoute);
 app.use ('/api/HeadlineNews',MissedJustInRoute)
 app.use('/api/history', UserHistoryRoute);
 app.use('/api/ml-partner', MlPartnerRoute);
-
 
 // Add cleanup routes
 const cleanupRouter = express.Router();
@@ -220,8 +302,165 @@ externalNewsRouter.get('/status', async (req, res) => {
 // Mount the external news routes
 app.use('/api/external-news', externalNewsRouter);
 
+// ENHANCED: Enhanced keep-alive with immediate response
+app.get('/api/health/keep-alive', async (req, res) => {
+  try {
+    const now = Date.now();
+    const uptime = process.uptime();
+    const needsFresh = shouldFetchFreshNews();
+    
+    console.log('🏥 Keep-alive ping - needs fresh:', needsFresh);
+    
+    // Respond immediately
+    res.json({ 
+      status: 'alive', 
+      timestamp: new Date().toISOString(),
+      uptime: Math.round(uptime),
+      lastNewsFetch: global.lastNewsFetch ? new Date(global.lastNewsFetch).toISOString() : 'never',
+      needsFreshNews: needsFresh,
+      isFetching: global.isFetching
+    });
+    
+    // THEN trigger fetch if needed (don't make client wait)
+    if (needsFresh && !global.isFetching) {
+      console.log('📰 Triggering news fetch via keep-alive...');
+      global.isFetching = true;
+      global.lastNewsFetch = now;
+      
+      fetchExternalNewsServer({ ip: req.ipAddress || '8.8.8.8' })
+        .then(results => {
+          console.log(`✅ Keep-alive fetch completed: ${results.length} articles`);
+          global.isFetching = false;
+        })
+        .catch(error => {
+          console.error('❌ Keep-alive fetch failed:', error);
+          global.isFetching = false;
+          global.lastNewsFetch = now - (25 * 60 * 1000);
+        });
+    }
+    
+  } catch (error) {
+    console.error('❌ Keep-alive error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
-// MongoDB connection
+// ENHANCED: Force fresh news endpoint
+app.post('/api/health/force-fresh-news', async (req, res) => {
+  try {
+    console.log('🚀 Force fresh news endpoint called');
+    
+    const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
+    console.log('🔍 Using IP:', ipInfo.ip);
+    
+    const articlesProcessed = await forceNewsFetch(ipInfo);
+    
+    res.json({
+      success: true,
+      message: `Successfully processed ${articlesProcessed} fresh articles`,
+      articlesProcessed: articlesProcessed,
+      timestamp: new Date().toISOString(),
+      lastFetch: new Date(global.lastNewsFetch).toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Force fetch endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Add a health check endpoint that also warms up the partner API
+app.get('/api/health/warm-up', async (req, res) => {
+  try {
+    console.log('🔥 Warm-up endpoint called');
+    
+    // Warm up our own database
+    await mongoose.connection.db.admin().ping();
+    
+    // Trigger fresh news if needed
+    if (shouldFetchFreshNews()) {
+      forceNewsFetch({ ip: req.ipAddress || '8.8.8.8' })
+        .then(count => console.log(`🔥 Warm-up fetch: ${count} articles`))
+        .catch(error => console.error('❌ Warm-up fetch failed:', error));
+    }
+    
+    res.json({
+      status: 'warmed-up',
+      timestamp: new Date().toISOString(),
+      dbConnected: mongoose.connection.readyState === 1,
+      newsFetchTriggered: shouldFetchFreshNews()
+    });
+    
+  } catch (error) {
+    console.error('❌ Warm-up error:', error);
+    res.status(500).json({
+      status: 'error',
+      error: error.message
+    });
+  }
+});
+
+// ENHANCED: Debug endpoint to manually trigger and debug
+app.get('/api/debug/external-news-status', (req, res) => {
+  res.json({
+    lastNewsFetch: global.lastNewsFetch ? new Date(global.lastNewsFetch).toISOString() : 'never',
+    serverStartTime: new Date(global.serverStartTime).toISOString(),
+    isFetching: global.isFetching,
+    needsFreshNews: shouldFetchFreshNews(),
+    partnerApiUrl: process.env.PARTNER_API_URL || 'not configured',
+    uptime: Math.round(process.uptime() / 60) + ' minutes'
+  });
+});
+
+// ENHANCED: Server startup with retry logic
+const fetchNewsOnStartup = async () => {
+  try {
+    console.log('🌅 Server starting up - fetching fresh news...');
+    
+    // Always fetch on startup for Render.com
+    global.isFetching = true;
+    global.lastNewsFetch = Date.now();
+    
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (attempts < maxAttempts) {
+      try {
+        const results = await fetchExternalNewsServer({ ip: '8.8.8.8' });
+        console.log(`✅ Startup fetch completed: ${results.length} articles processed`);
+        global.isFetching = false;
+        
+        // Also refresh channels after successful fetch
+        setTimeout(() => {
+          refreshExternalChannelsServer()
+            .then(() => console.log('✅ Startup channels refresh completed'))
+            .catch(error => console.error('❌ Startup channels refresh failed:', error));
+        }, 2000);
+        
+        return;
+      } catch (error) {
+        attempts++;
+        console.error(`❌ Startup fetch attempt ${attempts} failed:`, error);
+        if (attempts < maxAttempts) {
+          console.log(`⏳ Retrying in ${attempts * 5} seconds...`);
+          await new Promise(resolve => setTimeout(resolve, attempts * 5000));
+        }
+      }
+    }
+    
+    global.isFetching = false;
+    console.error('❌ All startup fetch attempts failed');
+  } catch (error) {
+    console.error('❌ Startup news fetch failed:', error);
+    global.isFetching = false;
+  }
+};
+
+// MongoDB connection with enhanced startup handling
 mongoose.connect(process.env.MONGO, {
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
@@ -233,29 +472,18 @@ mongoose.connect(process.env.MONGO, {
   // Start periodic cleanup after DB connection
   CleanupService.startPeriodicCleanup();
   
-  // Initialize external channels on startup
-  refreshExternalChannelsServer();
-  
-  // NEW: Fetch fresh news on startup
-  setTimeout(fetchNewsOnStartup, 2000); // Wait 2 seconds for everything to initialize
+  // Enhanced startup with immediate news fetch (reduced delay for cold starts)
+  setTimeout(fetchNewsOnStartup, 1000); // Wait only 1 second
   
   server.listen(port, () => {
     console.log(`Server is running on port ${port}`);
+    console.log('🚀 Server ready - enhanced cold start handling active');
   });
 })
   .catch(err => {
     console.error('MongoDB connection error:', err);
     process.exit(1);
   });
-  
-// Reconnection logic
-mongoose.connection.on('disconnected', () => {
-  console.log('Lost MongoDB connection. Reconnecting...');
-  mongoose.connect(process.env.MONGO, {
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-  });
-});
 
 // Heartbeat mechanism
 setInterval(async () => {
@@ -267,147 +495,7 @@ setInterval(async () => {
   }
 }, 300000); // Every 5 minutes
 
-// Add this to your main server.js file after the MongoDB connection
-
-// Global variable to track last fetch time
-global.lastNewsFetch = 0;
-global.serverStartTime = Date.now();
-
-// Function to check if we need fresh news
-const shouldFetchFreshNews = () => {
-  const now = Date.now();
-  const lastFetch = global.lastNewsFetch;
-  const thirtyMinutes = 30 * 60 * 1000; // 30 minutes
-  
-  // If we've never fetched or it's been more than 30 minutes
-  return lastFetch === 0 || (now - lastFetch) > thirtyMinutes;
-};
-
-// Middleware to ensure fresh news on important requests
-const ensureFreshNewsMiddleware = async (req, res, next) => {
-  try {
-    if (shouldFetchFreshNews()) {
-      console.log('🔄 Server needs fresh news - triggering background fetch...');
-      
-      // Update the timestamp immediately to prevent multiple simultaneous fetches
-      global.lastNewsFetch = Date.now();
-      
-      // Get IP from request
-      const ipInfo = { ip: req.ipAddress || '8.8.8.8' };
-      
-      // Fetch in background - don't make user wait
-      fetchExternalNewsServer(ipInfo)
-        .then(results => {
-          console.log(`✅ Background fetch completed: ${results.length} articles processed`);
-        })
-        .catch(error => {
-          console.error('❌ Background fetch failed:', error);
-          // Reset timestamp so we can try again next time
-          global.lastNewsFetch = Date.now() - (25 * 60 * 1000); // Try again in 5 minutes
-        });
-    }
-    
-    next();
-  } catch (error) {
-    console.error('❌ Fresh news middleware error:', error);
-    next(); // Continue even if this fails
-  }
-};
-
-// Apply middleware to your main content routes
-app.use('/api/HeadlineNews/Content', ensureFreshNewsMiddleware);
-app.use('/api/HeadlineNews/GetJustIn', ensureFreshNewsMiddleware);
-app.use('/api/HeadlineNews/Channel', ensureFreshNewsMiddleware);
-
-
-// Enhanced keep-alive endpoint that also triggers news fetch
-app.get('/api/health/keep-alive', async (req, res) => {
-  try {
-    const now = Date.now();
-    const uptime = process.uptime();
-    
-    console.log('🏥 Keep-alive ping received at:', new Date().toISOString());
-    console.log('⏱️ Server uptime:', Math.round(uptime / 60), 'minutes');
-    
-    // If server just started or hasn't fetched in a while, fetch news
-    if (shouldFetchFreshNews()) {
-      console.log('📰 Triggering news fetch via keep-alive...');
-      global.lastNewsFetch = now;
-      
-      // Fetch news in background
-      fetchExternalNewsServer({ ip: req.ipAddress || '8.8.8.8' })
-        .then(results => {
-          console.log(`✅ Keep-alive fetch completed: ${results.length} articles`);
-        })
-        .catch(error => {
-          console.error('❌ Keep-alive fetch failed:', error);
-          // Reset timestamp for retry
-          global.lastNewsFetch = now - (25 * 60 * 1000);
-        });
-    }
-    
-    res.json({ 
-      status: 'alive', 
-      timestamp: new Date().toISOString(),
-      uptime: Math.round(uptime),
-      lastNewsFetch: global.lastNewsFetch ? new Date(global.lastNewsFetch).toISOString() : 'never',
-      needsFreshNews: shouldFetchFreshNews()
-    });
-    
-  } catch (error) {
-    console.error('❌ Keep-alive error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Force fetch endpoint for immediate fresh news
-app.post('/api/health/force-fresh-news', async (req, res) => {
-  try {
-    console.log('🚀 Force fetching fresh news...');
-    
-    const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
-    
-    // Force fetch regardless of timing
-    global.lastNewsFetch = Date.now();
-    const results = await fetchExternalNewsServer(ipInfo);
-    
-    res.json({
-      success: true,
-      message: `Successfully fetched ${results.length} fresh articles`,
-      articlesProcessed: results.length,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Force fetch error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Server startup news fetch
-const fetchNewsOnStartup = async () => {
-  try {
-    console.log('🌅 Server starting up - checking for fresh news...');
-    
-    if (shouldFetchFreshNews()) {
-      console.log('📰 Fetching fresh news on startup...');
-      global.lastNewsFetch = Date.now();
-      
-      const results = await fetchExternalNewsServer({ ip: '8.8.8.8' });
-      console.log(`✅ Startup fetch completed: ${results.length} articles processed`);
-    } else {
-      console.log('ℹ️ News is still fresh, skipping startup fetch');
-    }
-  } catch (error) {
-    console.error('❌ Startup news fetch failed:', error);
-  }
-};
-
-
-// ===== CRON JOBS =====
+// ===== ENHANCED CRON JOBS =====
 
 // Move expired Just In content to Headlines (runs every minute)
 cron.schedule('* * * * *', async () => {
@@ -432,24 +520,29 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// **NEW: Fetch external news every 30 minutes**
-cron.schedule('*/30 * * * *', async () => {
+// ENHANCED: Updated cron job with error handling (every 15 minutes instead of 30)
+cron.schedule('*/15 * * * *', async () => {
   try {
-    console.log('📰 [CRON] Running 30-minute external news fetch...');
-    
-    // Use a default IP or get from environment
-    const defaultIpInfo = { ip: process.env.DEFAULT_IP || '8.8.8.8' };
-    
-    const results = await fetchExternalNewsServer(defaultIpInfo);
-    
-    if (results.length > 0) {
-      console.log(`✅ [CRON] Successfully processed ${results.length} external news articles`);
-    } else {
-      console.log('ℹ️ [CRON] No new external news articles to process');
+    if (global.isFetching) {
+      console.log('⏭️ [CRON] Skipping - fetch already in progress');
+      return;
     }
+    
+    console.log('📰 [CRON] Running 15-minute external news fetch...');
+    
+    global.isFetching = true;
+    global.lastNewsFetch = Date.now();
+    
+    const results = await fetchExternalNewsServer({ ip: '8.8.8.8' });
+    
+    console.log(`✅ [CRON] Successfully processed ${results.length} external news articles`);
+    global.isFetching = false;
     
   } catch (error) {
     console.error('❌ [CRON] Error in external news fetch:', error);
+    global.isFetching = false;
+    // Reset for retry
+    global.lastNewsFetch = Date.now() - (10 * 60 * 1000); // Retry in 10 minutes
   }
 });
 
@@ -539,6 +632,8 @@ cron.schedule('0 3 * * *', async () => {
     console.error('Error updating channel statistics:', error);
   }
 });
+
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send('Something broke!');
