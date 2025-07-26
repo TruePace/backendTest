@@ -1,3 +1,4 @@
+// Enhanced server.js with proper cold start handling for Render.com
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -8,30 +9,117 @@ import cron from 'node-cron';
 import http from 'http';
 import { Server } from 'socket.io';
 import { verifyFirebaseToken } from './lib/Middlewares/AuthMiddleware.js';
-import HeadlineNewsChannelRoute from './lib/routes/HeadlineNews/HeadlineNewsChannelRoute.js'
-import HeadlineNewsContentRoute from './lib/routes/HeadlineNews/HeadlineNewsContentRoute.js'
-import HeadlineNewsCommentRoute from './lib/routes/HeadlineNews/HeadlineNewsCommentRoute.js'
-import HeadlineNewsJustInRoute from './lib/routes/HeadlineNews/HeadlineNewsJustInRoute.js'
-import UserRoute from './lib/routes/HeadlineNews/HeadlineNewsUserRoute.js'
+import HeadlineNewsChannelRoute from './lib/routes/HeadlineNews/HeadlineNewsChannelRoute.js';
+import HeadlineNewsContentRoute from './lib/routes/HeadlineNews/HeadlineNewsContentRoute.js';
+import HeadlineNewsCommentRoute from './lib/routes/HeadlineNews/HeadlineNewsCommentRoute.js';
+import HeadlineNewsJustInRoute from './lib/routes/HeadlineNews/HeadlineNewsJustInRoute.js';
+import UserRoute from './lib/routes/HeadlineNews/HeadlineNewsUserRoute.js';
 import { Content } from './lib/models/HeadlineNews/HeadlineModel.js';
 import { initializeApp } from './lib/FirebaseAdmin.js';
-import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVideoRoute.js'
-import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/BeyondArticleRoute.js'
-import MissedJustInRoute from './lib/routes/Missed_Just_In/MissedJustInRoute.js'
-import UserHistoryRoute from './lib/routes/User_History/UserHistoryRoute.js'
+import BeyondVideoRoute from './lib/routes/Beyond_Headline/Beyond_video/BeyondVideoRoute.js';
+import BeyondArticleRoute from './lib/routes/Beyond_Headline/Beyond_article/BeyondArticleRoute.js';
+import MissedJustInRoute from './lib/routes/Missed_Just_In/MissedJustInRoute.js';
+import UserHistoryRoute from './lib/routes/User_History/UserHistoryRoute.js';
 import { setupChangeStream } from './lib/routes/Direct_ML_Database/ChangeStream.js';
-import MlPartnerRoute from './lib/routes/Direct_ML_Database/MlPartnerRoute.js'
-import LocationRoute from './lib/routes/HeadlineNews/LocationRoute.js'
+import MlPartnerRoute from './lib/routes/Direct_ML_Database/MlPartnerRoute.js';
+import ExternalNewsRoute from './lib/routes/HeadlineNews/ExternalNewsRoute.js';
+import LocationRoute from './lib/routes/HeadlineNews/LocationRoute.js';
 import { CleanupService, cleanupRoutes } from './lib/routes/HeadlineNews/CleanupService.js';
+import { 
+  fetchExternalNewsServer, 
+  refreshExternalChannelsServer,
+  createExternalNewsRoute 
+} from './lib/routes/HeadlineNews/ServerExternalNewsService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Load environment variables
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-await initializeApp(); 
+// Validate critical environment variables
+if (!process.env.PARTNER_API_URL) {
+  console.error('❌ CRITICAL: PARTNER_API_URL is not set in environment variables!');
+  console.error('Please ensure PARTNER_API_URL is set in Render.com environment settings');
+}
 
-// app config
+// Initialize Firebase
+await initializeApp();
+
+// Global state management for news fetching
+global.newsState = {
+  lastFetch: 0,
+  isFetching: false,
+  fetchCount: 0,
+  lastSuccessfulFetch: null,
+  consecutiveFailures: 0
+};
+
+// Helper function to check if fresh news is needed
+const needsFreshNews = () => {
+  const now = Date.now();
+  const timeSinceLastFetch = now - global.newsState.lastFetch;
+  const fetchInterval = 15 * 60 * 1000; // 15 minutes
+  
+  // Always fetch if never fetched before
+  if (global.newsState.lastFetch === 0) return true;
+  
+  // Fetch if interval has passed
+  if (timeSinceLastFetch > fetchInterval) return true;
+  
+  // Force fetch if too many consecutive failures
+  if (global.newsState.consecutiveFailures >= 3) return true;
+  
+  return false;
+};
+
+// Enhanced news fetching with retry and error handling
+const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
+  const { background = false, force = false } = options;
+  
+  // Skip if already fetching (unless forced)
+  if (global.newsState.isFetching && !force) {
+    console.log('⏭️ News fetch already in progress, skipping...');
+    return { success: false, reason: 'already_fetching' };
+  }
+  
+  // Check if fetch is needed (unless forced)
+  if (!force && !needsFreshNews()) {
+    console.log('⏰ Fresh news not needed yet');
+    return { success: false, reason: 'not_needed' };
+  }
+  
+  try {
+    global.newsState.isFetching = true;
+    global.newsState.lastFetch = Date.now();
+    global.newsState.fetchCount++;
+    
+    console.log(`🚀 Starting news fetch #${global.newsState.fetchCount} (${background ? 'background' : 'foreground'})...`);
+    
+    const results = await fetchExternalNewsServer(ipInfo);
+    
+    global.newsState.lastSuccessfulFetch = Date.now();
+    global.newsState.consecutiveFailures = 0;
+    
+    console.log(`✅ News fetch #${global.newsState.fetchCount} completed: ${results.length} articles`);
+    
+    return { success: true, articlesCount: results.length };
+    
+  } catch (error) {
+    global.newsState.consecutiveFailures++;
+    console.error(`❌ News fetch #${global.newsState.fetchCount} failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
+    
+    // Reset fetch timer for retry sooner
+    global.newsState.lastFetch = Date.now() - (10 * 60 * 1000); // Allow retry in 5 minutes
+    
+    return { success: false, error: error.message };
+    
+  } finally {
+    global.newsState.isFetching = false;
+  }
+};
+
+// App configuration
 const app = express();
 const server = http.createServer(app);
 export const io = new Server(server, {
@@ -48,27 +136,29 @@ const allowedOrigins = [
   'https://ikea-true.vercel.app'
 ];
 
+// Trust proxy for proper IP handling
 app.set('trust proxy', true);
 
+// IP extraction middleware
 app.use((req, res, next) => {
   const ip = 
     req.headers['x-forwarded-for']?.split(',').shift() || 
     req.socket?.remoteAddress ||
     req.ip ||
-    null;
+    '8.8.8.8';
   
   req.ipAddress = ip;
   next();
 });
 
-// Middleware
+// Core middleware
 app.use(express.json());
 app.use(cors({
   origin: function(origin, callback) {
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) === -1) {
-      var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
       return callback(new Error(msg), false);
     }
     return callback(null, true);
@@ -78,6 +168,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Socket.io setup
 io.on('connection', (socket) => {
   console.log('A user connected');
   
@@ -86,16 +177,113 @@ io.on('connection', (socket) => {
   });
 });
 
-// routes
-app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute)
+// CRITICAL: Wake-up endpoint that Render health checks can use
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'alive',
+    message: 'TruePace News API',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Health check endpoint that triggers news fetch
+app.get('/health', async (req, res) => {
+  const status = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    newsState: {
+      lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
+      isFetching: global.newsState.isFetching,
+      fetchCount: global.newsState.fetchCount,
+      needsFresh: needsFreshNews()
+    }
+  };
+  
+  // Send response immediately
+  res.json(status);
+  
+  // Trigger background fetch if needed
+  if (needsFreshNews()) {
+    triggerNewsFetch({ ip: req.ipAddress }, { background: true });
+  }
+});
+
+// Enhanced keep-alive endpoint
+app.get('/api/health/keep-alive', async (req, res) => {
+  const needsFresh = needsFreshNews();
+  
+  // Always respond immediately
+  res.json({ 
+    status: 'alive', 
+    timestamp: new Date().toISOString(),
+    uptime: Math.round(process.uptime()),
+    lastNewsFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
+    needsFreshNews: needsFresh,
+    isFetching: global.newsState.isFetching,
+    fetchCount: global.newsState.fetchCount
+  });
+  
+  // Trigger background fetch if needed
+  if (needsFresh) {
+    console.log('📰 Keep-alive triggering background news fetch...');
+    triggerNewsFetch({ ip: req.ipAddress }, { background: true });
+  }
+});
+
+// Force fresh news endpoint
+app.post('/api/health/force-fresh-news', async (req, res) => {
+  try {
+    console.log('🚀 Force fresh news requested');
+    
+    const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
+    const result = await triggerNewsFetch(ipInfo, { force: true });
+    
+    res.json({
+      success: result.success,
+      message: result.success 
+        ? `Successfully processed ${result.articlesCount} fresh articles` 
+        : `Failed: ${result.reason || result.error}`,
+      articlesProcessed: result.articlesCount || 0,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Force fetch endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// CRITICAL: Middleware that ensures fresh news on important endpoints
+const ensureFreshNewsMiddleware = (req, res, next) => {
+  // Only trigger on GET requests to avoid duplicate fetches
+  if (req.method === 'GET' && needsFreshNews()) {
+    console.log('🔄 Content request triggering background news fetch...');
+    triggerNewsFetch({ ip: req.ipAddress }, { background: true });
+  }
+  next();
+};
+
+// Apply fresh news middleware to content routes
+app.use('/api/HeadlineNews/Channel', ensureFreshNewsMiddleware);
+app.use('/api/HeadlineNews/GetJustIn', ensureFreshNewsMiddleware);
+app.use('/api/HeadlineNews/Content', ensureFreshNewsMiddleware);
+
+// Mount all routes
+app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute);
+app.use('/api/HeadlineNews/Channel', ExternalNewsRoute);
 app.use('/api/location', LocationRoute);
-app.use('/api/HeadlineNews/Comment', HeadlineNewsCommentRoute)
-app.use('/api/HeadlineNews/Content', HeadlineNewsContentRoute)
-app.use('/api/HeadlineNews/GetJustIn', HeadlineNewsJustInRoute)
+app.use('/api/HeadlineNews/Comment', HeadlineNewsCommentRoute);
+app.use('/api/HeadlineNews/Content', HeadlineNewsContentRoute);
+app.use('/api/HeadlineNews/GetJustIn', HeadlineNewsJustInRoute);
 app.use('/api/users', UserRoute);
 app.use('/api/BeyondVideo', BeyondVideoRoute);
 app.use('/api/BeyondArticle', BeyondArticleRoute);
-app.use('/api/HeadlineNews', MissedJustInRoute)
+app.use('/api/HeadlineNews', MissedJustInRoute);
 app.use('/api/history', UserHistoryRoute);
 app.use('/api/ml-partner', MlPartnerRoute);
 
@@ -104,83 +292,70 @@ const cleanupRouter = express.Router();
 cleanupRoutes(cleanupRouter);
 app.use('/api/admin', cleanupRouter);
 
-// Basic health check endpoints
-app.get('/api/health/keep-alive', async (req, res) => {
-  try {
-    const uptime = process.uptime();
-    
-    console.log('🏥 Keep-alive ping');
-    
-    res.json({ 
-      status: 'alive', 
-      timestamp: new Date().toISOString(),
-      uptime: Math.round(uptime)
-    });
-    
-  } catch (error) {
-    console.error('❌ Keep-alive error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+// Add external news management routes
+const externalNewsRouter = express.Router();
+createExternalNewsRoute(externalNewsRouter);
+app.use('/api/external-news', externalNewsRouter);
 
-// Warm-up endpoint for database
-app.get('/api/health/warm-up', async (req, res) => {
-  try {
-    console.log('🔥 Warm-up endpoint called');
-    
-    // Warm up database connection
-    await mongoose.connection.db.admin().ping();
-    
-    res.json({
-      status: 'warmed-up',
-      timestamp: new Date().toISOString(),
-      dbConnected: mongoose.connection.readyState === 1
-    });
-    
-  } catch (error) {
-    console.error('❌ Warm-up error:', error);
-    res.status(500).json({
-      status: 'error',
-      error: error.message
-    });
-  }
+// Debug endpoint
+app.get('/api/debug/status', (req, res) => {
+  res.json({
+    serverTime: new Date().toISOString(),
+    uptime: `${Math.round(process.uptime() / 60)} minutes`,
+    newsState: global.newsState,
+    environment: {
+      NODE_ENV: process.env.NODE_ENV,
+      hasPartnerAPI: !!process.env.PARTNER_API_URL,
+      port: port
+    },
+    database: {
+      connected: mongoose.connection.readyState === 1,
+      host: mongoose.connection.host
+    }
+  });
 });
 
 // MongoDB connection
 mongoose.connect(process.env.MONGO, {
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-  })
-  .then(() => {
-    console.log('Connected to MongoDB');
-    setupChangeStream();
-    
-    // Start periodic cleanup after DB connection
-    CleanupService.startPeriodicCleanup();
-    
-    server.listen(port, () => {
-      console.log(`Server is running on port ${port}`);
-      console.log('🚀 Server ready - external news now handled by frontend');
-    });
-  })
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+})
+.then(async () => {
+  console.log('✅ Connected to MongoDB');
+  setupChangeStream();
+  
+  // Start cleanup service
+  CleanupService.startPeriodicCleanup();
+  
+  // CRITICAL: Fetch news immediately on startup
+  console.log('🌅 Server starting - fetching initial news...');
+  await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+  
+  // Start server
+  server.listen(port, () => {
+    console.log(`✅ Server running on port ${port}`);
+    console.log('🚀 Cold start handling active');
+    console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
   });
+})
+.catch(err => {
+  console.error('❌ MongoDB connection error:', err);
+  process.exit(1);
+});
 
-// Heartbeat mechanism
+// Database heartbeat
 setInterval(async () => {
   try {
     await mongoose.connection.db.admin().ping();
-    console.log('Database connection is alive');
+    console.log('💓 Database heartbeat successful');
   } catch (error) {
-    console.error('Error pinging database:', error);
+    console.error('❌ Database heartbeat failed:', error);
   }
-}, 300000); // Every 5 minutes
+}, 5 * 60 * 1000); // Every 5 minutes
 
-// ===== CRON JOBS =====
+// CRON JOBS
 
-// Move expired Just In content to Headlines (runs every minute)
+// Move expired Just In content to Headlines (every minute)
 cron.schedule('* * * * *', async () => {
   try {
     const expiredJustInContent = await Content.find({
@@ -196,68 +371,74 @@ cron.schedule('* * * * *', async () => {
     }
     
     if (expiredJustInContent.length > 0) {
-      console.log(`Moved ${expiredJustInContent.length} items from Just In to Headline News`);
+      console.log(`📦 Moved ${expiredJustInContent.length} items from Just In to Headlines`);
     }
   } catch (error) {
-    console.error('Error in Just In to Headlines cron job:', error);
+    console.error('❌ Error in Just In rotation:', error);
   }
 });
 
-// Enhanced cleanup with CleanupService - runs daily at midnight
+// Fetch external news every 15 minutes
+cron.schedule('*/15 * * * *', async () => {
+  console.log('⏰ [CRON] 15-minute news fetch triggered');
+  await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+});
+
+// Refresh external channels every 6 hours
+cron.schedule('0 */6 * * *', async () => {
+  try {
+    console.log('📺 [CRON] Refreshing external channels...');
+    const success = await refreshExternalChannelsServer();
+    console.log(success ? '✅ Channels refreshed' : '❌ Channel refresh failed');
+  } catch (error) {
+    console.error('❌ Channel refresh error:', error);
+  }
+});
+
+// Daily cleanup at midnight
 cron.schedule('0 0 * * *', async () => {
   try {
-    console.log('🌙 Running daily cleanup with CleanupService...');
+    console.log('🌙 [CRON] Running daily cleanup...');
     
     const cleanupResult = await CleanupService.runFullCleanup();
     
     if (cleanupResult.success) {
-      console.log(`✅ Daily cleanup completed: ${cleanupResult.duplicatesRemoved} duplicates removed, ${cleanupResult.expiredRemoved} expired items removed`);
-    } else {
-      console.error('❌ Daily cleanup failed:', cleanupResult.error);
+      console.log(`✅ Cleanup completed: ${cleanupResult.duplicatesRemoved} duplicates, ${cleanupResult.expiredRemoved} expired`);
     }
     
-    // Clean up internal content (24hr rule)
+    // Additional cleanup for expired content
     const now = new Date();
-    const expiredInternalResult = await Content.deleteMany({ 
+    
+    const internal = await Content.deleteMany({ 
       source: { $ne: 'external' },
       headlineExpiresAt: { $lte: now } 
     });
     
-    console.log(`Deleted ${expiredInternalResult.deletedCount} expired internal content items (24hr rule).`);
+    const external = await Content.deleteMany({ 
+      source: 'external',
+      headlineExpiresAt: { $lte: now } 
+    });
+    
+    console.log(`🗑️ Deleted ${internal.deletedCount} internal, ${external.deletedCount} external expired items`);
     
   } catch (error) {
-    console.error('Error in daily cleanup cron job:', error);
-  }
-});
-
-// 6-hour cleanup for any remaining cleanup tasks
-cron.schedule('0 */6 * * *', async () => {
-  try {
-    console.log('🕕 Running 6-hour cleanup...');
-    
-    const duplicatesRemoved = await CleanupService.removeDuplicateExternalContent();
-    
-    if (duplicatesRemoved > 0) {
-      console.log(`[6hr cleanup] Removed ${duplicatesRemoved} duplicates`);
-    }
-    
-  } catch (error) {
-    console.error('Error in 6-hour cleanup:', error);
-  }
-});
-
-// Update channel statistics daily at 3 AM
-cron.schedule('0 3 * * *', async () => {
-  try {
-    console.log('📊 Running daily channel statistics update...');
-    await CleanupService.updateChannelStats();
-  } catch (error) {
-    console.error('Error updating channel statistics:', error);
+    console.error('❌ Daily cleanup error:', error);
   }
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send('Something broke!');
+  console.error('❌ Unhandled error:', err.stack);
+  res.status(500).json({ error: 'Something went wrong!' });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('📛 SIGTERM received, shutting down gracefully...');
+  server.close(() => {
+    mongoose.connection.close(false, () => {
+      console.log('✅ Server closed');
+      process.exit(0);
+    });
+  });
 });
