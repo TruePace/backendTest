@@ -77,14 +77,16 @@ const needsFreshNews = () => {
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { background = false, force = false } = options;
   
-  // Skip if already fetching (unless forced)
-  if (global.newsState.isFetching && !force) {
+  // For cold starts or force requests, always proceed
+  const isRecentStartup = process.uptime() < 300; // Less than 5 minutes
+  
+  if (!force && !isRecentStartup && global.newsState.isFetching) {
     console.log('⏭️ News fetch already in progress, skipping...');
     return { success: false, reason: 'already_fetching' };
   }
   
-  // Check if fetch is needed (unless forced)
-  if (!force && !needsFreshNews()) {
+  // For recent startups, always fetch regardless of timing
+  if (!force && !isRecentStartup && !needsFreshNews()) {
     console.log('⏰ Fresh news not needed yet');
     return { success: false, reason: 'not_needed' };
   }
@@ -94,7 +96,8 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     global.newsState.lastFetch = Date.now();
     global.newsState.fetchCount++;
     
-    console.log(`🚀 Starting news fetch #${global.newsState.fetchCount} (${background ? 'background' : 'foreground'})...`);
+    const startupIndicator = isRecentStartup ? ' (STARTUP)' : '';
+    console.log(`🚀 Starting news fetch #${global.newsState.fetchCount}${startupIndicator} (${background ? 'background' : 'foreground'})...`);
     
     const results = await fetchExternalNewsServer(ipInfo);
     
@@ -109,8 +112,12 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     global.newsState.consecutiveFailures++;
     console.error(`❌ News fetch #${global.newsState.fetchCount} failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
     
-    // Reset fetch timer for retry sooner
-    global.newsState.lastFetch = Date.now() - (10 * 60 * 1000); // Allow retry in 5 minutes
+    // For startups, retry more aggressively
+    if (isRecentStartup) {
+      global.newsState.lastFetch = Date.now() - (5 * 60 * 1000); // Retry in 5 minutes
+    } else {
+      global.newsState.lastFetch = Date.now() - (10 * 60 * 1000); // Allow retry in 5 minutes
+    }
     
     return { success: false, error: error.message };
     
@@ -188,6 +195,8 @@ app.get('/', (req, res) => {
 
 // Health check endpoint that triggers news fetch
 app.get('/health', async (req, res) => {
+  const needsFresh = needsFreshNews();
+  
   const status = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
@@ -196,17 +205,54 @@ app.get('/health', async (req, res) => {
       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
       isFetching: global.newsState.isFetching,
       fetchCount: global.newsState.fetchCount,
-      needsFresh: needsFreshNews()
+      needsFresh: needsFresh
     }
   };
   
   // Send response immediately
   res.json(status);
   
-  // Trigger background fetch if needed
-  if (needsFreshNews()) {
+  // ALWAYS trigger fetch on health check if server just woke up
+  if (process.uptime() < 300) { // If server has been up for less than 5 minutes
+    console.log('🔄 Health check detected recent startup - forcing news fetch');
+    triggerNewsFetch({ ip: req.ipAddress }, { force: true, background: true });
+  } else if (needsFresh) {
+    console.log('📰 Health check triggering background news fetch...');
     triggerNewsFetch({ ip: req.ipAddress }, { background: true });
   }
+});
+
+// CRITICAL: Wake-up endpoint specifically for Render cold starts
+app.get('/wake', async (req, res) => {
+  const startTime = Date.now();
+  console.log('🔔 Wake endpoint called - starting aggressive initialization...');
+  
+  // Immediately respond to prevent timeout
+  res.json({ 
+    status: 'waking up', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    action: 'triggering_aggressive_news_fetch'
+  });
+  
+  // Start aggressive background initialization
+  setTimeout(async () => {
+    try {
+      console.log('🚀 Background: Starting news fetch after wake...');
+      
+      // Force immediate news fetch regardless of timing
+      const result = await triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { 
+        force: true, 
+        background: false // Make it foreground for wake calls
+      });
+      
+      const duration = Date.now() - startTime;
+      console.log(`⏱️ Wake sequence completed in ${duration}ms:`, result);
+      
+    } catch (error) {
+      console.error('❌ Background wake sequence failed:', error);
+    }
+  }, 100); // Start immediately
 });
 
 // Enhanced keep-alive endpoint
@@ -234,17 +280,27 @@ app.get('/api/health/keep-alive', async (req, res) => {
 // Force fresh news endpoint
 app.post('/api/health/force-fresh-news', async (req, res) => {
   try {
+    const startTime = Date.now();
     console.log('🚀 Force fresh news requested');
     
     const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
-    const result = await triggerNewsFetch(ipInfo, { force: true });
+    const isUrgent = req.body.urgent || false;
+    
+    console.log(`📡 ${isUrgent ? '[URGENT]' : ''} Forcing news fetch...`);
+    
+    // Always force fetch when explicitly requested
+    const result = await triggerNewsFetch(ipInfo, { force: true, background: false });
+    
+    const duration = Date.now() - startTime;
     
     res.json({
       success: result.success,
       message: result.success 
-        ? `Successfully processed ${result.articlesCount} fresh articles` 
+        ? `Successfully processed ${result.articlesCount} fresh articles in ${duration}ms` 
         : `Failed: ${result.reason || result.error}`,
       articlesProcessed: result.articlesCount || 0,
+      duration: duration,
+      urgent: isUrgent,
       timestamp: new Date().toISOString()
     });
     
@@ -327,15 +383,21 @@ mongoose.connect(process.env.MONGO, {
   // Start cleanup service
   CleanupService.startPeriodicCleanup();
   
-  // CRITICAL: Fetch news immediately on startup
-  console.log('🌅 Server starting - fetching initial news...');
-  await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+  // CRITICAL: Always fetch news immediately on startup - regardless of last fetch time
+  console.log('🌅 Server starting - fetching initial news with force...');
+  await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true, background: false });
   
   // Start server
   server.listen(port, () => {
     console.log(`✅ Server running on port ${port}`);
     console.log('🚀 Cold start handling active');
     console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
+    
+    // ADDITIONAL: Set up immediate fetch after server is ready
+    setTimeout(async () => {
+      console.log('🔄 Post-startup news fetch...');
+      await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+    }, 5000); // 5 seconds after server starts
   });
 })
 .catch(err => {
