@@ -52,7 +52,8 @@ global.newsState = {
   isFetching: false,
   fetchCount: 0,
   lastSuccessfulFetch: null,
-  consecutiveFailures: 0
+  consecutiveFailures: 0,
+   activeFetchPromise: null // NEW: Track active promise
 };
 
 // Helper function to check if fresh news is needed
@@ -77,53 +78,69 @@ const needsFreshNews = () => {
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { background = false, force = false } = options;
   
-  // For cold starts or force requests, always proceed
-  const isRecentStartup = process.uptime() < 300; // Less than 5 minutes
+  // If there's already an active fetch promise, wait for it instead of starting new one
+  if (global.newsState.activeFetchPromise && !force) {
+    console.log('⏳ Waiting for existing news fetch to complete...');
+    try {
+      return await global.newsState.activeFetchPromise;
+    } catch (error) {
+      console.log('⚠️ Existing fetch failed, will start new one');
+    }
+  }
+  
+  const isRecentStartup = process.uptime() < 300;
   
   if (!force && !isRecentStartup && global.newsState.isFetching) {
     console.log('⏭️ News fetch already in progress, skipping...');
     return { success: false, reason: 'already_fetching' };
   }
   
-  // For recent startups, always fetch regardless of timing
   if (!force && !isRecentStartup && !needsFreshNews()) {
     console.log('⏰ Fresh news not needed yet');
     return { success: false, reason: 'not_needed' };
   }
-  
-  try {
-    global.newsState.isFetching = true;
-    global.newsState.lastFetch = Date.now();
-    global.newsState.fetchCount++;
-    
-    const startupIndicator = isRecentStartup ? ' (STARTUP)' : '';
-    console.log(`🚀 Starting news fetch #${global.newsState.fetchCount}${startupIndicator} (${background ? 'background' : 'foreground'})...`);
-    
-    const results = await fetchExternalNewsServer(ipInfo);
-    
-    global.newsState.lastSuccessfulFetch = Date.now();
-    global.newsState.consecutiveFailures = 0;
-    
-    console.log(`✅ News fetch #${global.newsState.fetchCount} completed: ${results.length} articles`);
-    
-    return { success: true, articlesCount: results.length };
-    
-  } catch (error) {
-    global.newsState.consecutiveFailures++;
-    console.error(`❌ News fetch #${global.newsState.fetchCount} failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
-    
-    // For startups, retry more aggressively
-    if (isRecentStartup) {
-      global.newsState.lastFetch = Date.now() - (5 * 60 * 1000); // Retry in 5 minutes
-    } else {
-      global.newsState.lastFetch = Date.now() - (10 * 60 * 1000); // Allow retry in 5 minutes
+
+  // Create the fetch promise and store it globally
+  const fetchPromise = (async () => {
+    try {
+      global.newsState.isFetching = true;
+      global.newsState.lastFetch = Date.now();
+      global.newsState.fetchCount++;
+      
+      const startupIndicator = isRecentStartup ? ' (STARTUP)' : '';
+      console.log(`🚀 Starting news fetch #${global.newsState.fetchCount}${startupIndicator} (${background ? 'background' : 'foreground'})...`);
+      
+      const results = await fetchExternalNewsServer(ipInfo);
+      
+      global.newsState.lastSuccessfulFetch = Date.now();
+      global.newsState.consecutiveFailures = 0;
+      
+      console.log(`✅ News fetch #${global.newsState.fetchCount} completed: ${results.length} articles`);
+      
+      return { success: true, articlesCount: results.length };
+      
+    } catch (error) {
+      global.newsState.consecutiveFailures++;
+      console.error(`❌ News fetch #${global.newsState.fetchCount} failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
+      
+      if (isRecentStartup) {
+        global.newsState.lastFetch = Date.now() - (5 * 60 * 1000);
+      } else {
+        global.newsState.lastFetch = Date.now() - (10 * 60 * 1000);
+      }
+      
+      return { success: false, error: error.message };
+      
+    } finally {
+      global.newsState.isFetching = false;
+      global.newsState.activeFetchPromise = null; // Clear the promise
     }
-    
-    return { success: false, error: error.message };
-    
-  } finally {
-    global.newsState.isFetching = false;
-  }
+  })();
+  
+  // Store the active promise
+  global.newsState.activeFetchPromise = fetchPromise;
+  
+  return fetchPromise;
 };
 
 // App configuration
@@ -441,9 +458,21 @@ cron.schedule('* * * * *', async () => {
 });
 
 // Fetch external news every 15 minutes
+let cronJobRunning = false;
+
 cron.schedule('*/15 * * * *', async () => {
-  console.log('⏰ [CRON] 15-minute news fetch triggered');
-  await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+  if (cronJobRunning) {
+    console.log('⏭️ [CRON] Previous job still running, skipping...');
+    return;
+  }
+  
+  cronJobRunning = true;
+  try {
+    console.log('⏰ [CRON] 15-minute news fetch triggered');
+    await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+  } finally {
+    cronJobRunning = false;
+  }
 });
 
 // Refresh external channels every 6 hours
