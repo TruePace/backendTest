@@ -395,6 +395,11 @@ mongoose.connect(process.env.MONGO, {
 })
 .then(async () => {
   console.log('✅ Connected to MongoDB');
+  
+  // CRITICAL: Run emergency duplicate cleanup on startup
+  console.log('🧹 Running emergency duplicate cleanup on startup...');
+  await CleanupService.cleanupDuplicatesNow();
+  
   setupChangeStream();
   
   // Start cleanup service
