@@ -1,4 +1,4 @@
-// Enhanced server.js with aggressive rate limiting for NewsAPI free tier
+// Enhanced server.js with proper auto-fetching for development and production
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -37,16 +37,22 @@ const __dirname = path.dirname(__filename);
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, '.env') });
 
+// Detect environment
+const isDevelopment = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
+const isProduction = process.env.NODE_ENV === 'production';
+
+console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
+
 // Validate critical environment variables
 if (!process.env.PARTNER_API_URL) {
   console.error('❌ CRITICAL: PARTNER_API_URL is not set in environment variables!');
-  console.error('Please ensure PARTNER_API_URL is set in Render.com environment settings');
+  console.error('Please ensure PARTNER_API_URL is set in environment settings');
 }
 
 // Initialize Firebase
 await initializeApp();
 
-// 🚨 ENHANCED: Rate limit tracking for NewsAPI free tier (100 requests/day)
+// 🆕 ENVIRONMENT-SPECIFIC Rate limiting
 global.newsState = {
   lastFetch: 0,
   isFetching: false,
@@ -54,16 +60,18 @@ global.newsState = {
   lastSuccessfulFetch: null,
   consecutiveFailures: 0,
   activeFetchPromise: null,
-  // 🆕 Updated rate limiting fields for 8 requests/day
+  // Different limits for dev vs production
   dailyRequestCount: 0,
   lastResetDate: new Date().toDateString(),
   rateLimitHit: false,
-  maxDailyRequests: 8, // Changed from 90 to 8 for every 3 hours
-  minimumInterval: 3 * 60 * 60 * 1000, // Changed from 4 hours to 3 hours
+  maxDailyRequests: isDevelopment ? 50 : 20, // More generous in development
+  minimumInterval: isDevelopment ? 10 * 60 * 1000 : 60 * 60 * 1000, // 10 min dev, 1 hour prod
   lastFetchSuccess: false
 };
 
-// 🆕 Rate limit checker
+console.log(`⚙️ Rate Limits: ${global.newsState.maxDailyRequests} requests/day, ${Math.round(global.newsState.minimumInterval/60000)} min intervals`);
+
+// 🆕 Smarter rate limit checker
 const canMakeApiRequest = () => {
   const today = new Date().toDateString();
   
@@ -93,11 +101,11 @@ const canMakeApiRequest = () => {
   return true;
 };
 
-// 🆕 Much more restrictive freshness check
+// 🆕 Environment-aware freshness check
 const needsFreshNews = () => {
   const now = Date.now();
   const timeSinceLastFetch = now - global.newsState.lastFetch;
-  const minimumInterval = global.newsState.minimumInterval; // 4 hours minimum
+  const minimumInterval = global.newsState.minimumInterval;
   
   // Never fetch if rate limit hit
   if (global.newsState.rateLimitHit) {
@@ -105,15 +113,11 @@ const needsFreshNews = () => {
     return false;
   }
   
-  // Never fetch if never fetched AND server has been up for less than 30 minutes
-  if (global.newsState.lastFetch === 0 && process.uptime() < 30 * 60) {
-    console.log('⏳ Server recently started, delaying first fetch');
-    return false;
-  }
+  // 🆕 REMOVED: Cold start delay - allow immediate fetching
   
-  // Only fetch if minimum interval has passed
-  if (timeSinceLastFetch > minimumInterval) {
-    console.log(`✅ ${Math.round(timeSinceLastFetch / (60 * 1000))} minutes since last fetch - can fetch now`);
+  // Only fetch if minimum interval has passed OR never fetched
+  if (global.newsState.lastFetch === 0 || timeSinceLastFetch > minimumInterval) {
+    console.log(`✅ ${global.newsState.lastFetch === 0 ? 'First fetch' : Math.round(timeSinceLastFetch / (60 * 1000)) + ' minutes since last fetch'} - can fetch now`);
     return true;
   }
   
@@ -121,11 +125,11 @@ const needsFreshNews = () => {
   return false;
 };
 
-// 🆕 Enhanced news fetching with strict rate limiting
+// Enhanced news fetching with better handling
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { background = false, force = false } = options;
   
-  // 🚨 STRICT: Check rate limits first (unless absolutely forced)
+  // Check rate limits first (unless absolutely forced)
   if (!force && !canMakeApiRequest()) {
     return { 
       success: false, 
@@ -161,7 +165,7 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
       global.newsState.isFetching = true;
       global.newsState.lastFetch = Date.now();
       global.newsState.fetchCount++;
-      global.newsState.dailyRequestCount++; // 🆕 Increment daily counter
+      global.newsState.dailyRequestCount++;
       
       console.log(`🚀 API Request #${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests} (Total: ${global.newsState.fetchCount})${background ? ' (background)' : ''}`);
       
@@ -179,17 +183,14 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
       global.newsState.consecutiveFailures++;
       global.newsState.lastFetchSuccess = false;
       
-      // 🆕 Handle rate limit errors specifically
+      // Handle rate limit errors specifically
       if (error.message.includes('rate limit') || error.message.includes('Rate limit')) {
         console.error(`🚫 Rate limit hit! Marking as rate limited.`);
         global.newsState.rateLimitHit = true;
-        global.newsState.dailyRequestCount = global.newsState.maxDailyRequests; // Max out counter
+        global.newsState.dailyRequestCount = global.newsState.maxDailyRequests;
       }
       
       console.error(`❌ News fetch failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
-      
-      // Set longer backoff on failure
-      global.newsState.lastFetch = Date.now() - (2 * 60 * 60 * 1000); // 2 hours ago
       
       return { success: false, error: error.message };
       
@@ -266,16 +267,18 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'alive',
     message: 'TruePace News API',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    environment: isDevelopment ? 'development' : 'production'
   });
 });
 
-// 🆕 Non-triggering health check
+// Health check with smart auto-trigger
 app.get('/health', async (req, res) => {
   const status = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    environment: isDevelopment ? 'development' : 'production',
     apiLimits: {
       dailyRequests: global.newsState.dailyRequestCount,
       maxDaily: global.newsState.maxDailyRequests,
@@ -285,10 +288,17 @@ app.get('/health', async (req, res) => {
   };
   
   res.json(status);
-  // 🚨 REMOVED: No automatic triggering on health check
+  
+  // 🆕 AUTO-TRIGGER: Smart fetching on health check
+  if (needsFreshNews() && canMakeApiRequest()) {
+    console.log('🚀 Health check triggered automatic news fetch');
+    setTimeout(() => {
+      triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
+    }, 2000); // Small delay to respond to health check first
+  }
 });
 
-// 🆕 Conservative wake endpoint
+// Wake endpoint with immediate trigger
 app.get('/wake', async (req, res) => {
   console.log('🔔 Wake endpoint called');
   
@@ -296,6 +306,7 @@ app.get('/wake', async (req, res) => {
     status: 'awake', 
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    environment: isDevelopment ? 'development' : 'production',
     rateLimitStatus: {
       dailyRequests: global.newsState.dailyRequestCount,
       maxDaily: global.newsState.maxDailyRequests,
@@ -303,21 +314,22 @@ app.get('/wake', async (req, res) => {
     }
   });
   
-  // 🚨 ONLY fetch if we haven't fetched today AND server just started
-  if (global.newsState.dailyRequestCount === 0 && process.uptime() < 600) {
-    console.log('🚀 First fetch of the day after cold start...');
+  // 🆕 IMMEDIATE FETCH: Trigger news fetch on wake (especially for development)
+  if (canMakeApiRequest() && needsFreshNews()) {
+    console.log('🚀 Wake triggered immediate news fetch...');
     setTimeout(() => {
-      triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { force: false, background: true });
-    }, 10000); // Wait 10 seconds
+      triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
+    }, 1000);
   }
 });
 
-// 🆕 Conservative keep-alive
+// Keep-alive with periodic trigger
 app.get('/api/health/keep-alive', async (req, res) => {
   res.json({ 
     status: 'alive', 
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
+    environment: isDevelopment ? 'development' : 'production',
     apiStatus: {
       dailyRequests: global.newsState.dailyRequestCount,
       maxDaily: global.newsState.maxDailyRequests,
@@ -325,16 +337,22 @@ app.get('/api/health/keep-alive', async (req, res) => {
       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
     }
   });
- 
+  
+  // 🆕 PERIODIC TRIGGER: Check if we need fresh news
+  if (needsFreshNews() && canMakeApiRequest()) {
+    console.log('🚀 Keep-alive triggered periodic news fetch');
+    setTimeout(() => {
+      triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
+    }, 3000);
+  }
 });
 
-// Manual force fetch with warnings
+// Manual force fetch
 app.post('/api/health/force-fresh-news', async (req, res) => {
   try {
     const startTime = Date.now();
     console.log('🚀 Force fresh news requested');
     
-    // 🆕 Warn about rate limits
     if (!canMakeApiRequest()) {
       return res.status(429).json({
         success: false,
@@ -398,7 +416,6 @@ app.post('/api/cron/fetch-news', async (req, res) => {
       });
     }
     
-    // Force a background fetch
     const result = await triggerNewsFetch(
       { ip: req.ipAddress || '8.8.8.8' }, 
       { force: false, background: true }
@@ -409,7 +426,7 @@ app.post('/api/cron/fetch-news', async (req, res) => {
       timestamp: new Date().toISOString(),
       articlesProcessed: result.articlesCount || 0,
       dailyUsage: `${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests}`,
-      nextScheduled: 'In 3 hours',
+      environment: isDevelopment ? 'development' : 'production',
       reason: result.reason || 'completed'
     };
     
@@ -437,13 +454,14 @@ app.get('/api/cron/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
+    environment: isDevelopment ? 'development' : 'production',
     canFetch: canMakeApiRequest(),
     dailyUsage: `${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests}`,
     lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
   });
 });
 
-// Mount all routes (without auto-triggering middleware)
+// Mount all routes
 app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute);
 app.use('/api/HeadlineNews/Channel', ExternalNewsRoute);
 app.use('/api/location', LocationRoute);
@@ -472,6 +490,7 @@ app.get('/api/debug/status', (req, res) => {
   res.json({
     serverTime: new Date().toISOString(),
     uptime: `${Math.round(process.uptime() / 60)} minutes`,
+    environment: isDevelopment ? 'development' : 'production',
     newsState: global.newsState,
     apiLimits: {
       dailyRequests: global.newsState.dailyRequestCount,
@@ -492,7 +511,7 @@ app.get('/api/debug/status', (req, res) => {
   });
 });
 
-// MongoDB connection
+// MongoDB connection with startup fetch
 mongoose.connect(process.env.MONGO, {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
@@ -506,13 +525,25 @@ mongoose.connect(process.env.MONGO, {
   setupChangeStream();
   CleanupService.startPeriodicCleanup();
   
-  // 🚨 REMOVED: Automatic startup fetch
-  console.log('🌅 Server starting - no automatic news fetch to preserve API limits');
+  // 🆕 AUTOMATIC STARTUP FETCH: Trigger initial news fetch after successful DB connection
+  if (canMakeApiRequest()) {
+    console.log('🌅 Server starting - triggering initial news fetch...');
+    setTimeout(async () => {
+      try {
+        const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true });
+        console.log(`🚀 Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
+      } catch (error) {
+        console.error('❌ Startup fetch failed:', error.message);
+      }
+    }, 5000); // Wait 5 seconds after DB connection
+  } else {
+    console.log('🌅 Server starting - startup fetch skipped due to rate limits');
+  }
   
   // Start server
   server.listen(port, () => {
     console.log(`✅ Server running on port ${port}`);
-    console.log('🚀 Rate-limited cold start handling active');
+    console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
     console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
     console.log(`🚫 API Rate Limiting: ${global.newsState.maxDailyRequests} requests/day max`);
   });
@@ -532,7 +563,7 @@ setInterval(async () => {
   }
 }, 5 * 60 * 1000);
 
-// CRON JOBS - Only internal operations, no API calls
+// CRON JOBS
 
 // Move expired Just In content to Headlines (every minute)
 cron.schedule('* * * * *', async () => {
@@ -557,35 +588,55 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// 🆕 MUCH LESS FREQUENT: Fetch external news only 4 times per day maximum
+// 🆕 ENVIRONMENT-SPECIFIC CRON: Different schedules for dev vs production
 let cronJobRunning = false;
 
-cron.schedule('0 */3 * * *', async () => { // Every 3 hours: 0:00, 3:00, 6:00, 9:00, 12:00, 15:00, 18:00, 21:00
-  if (cronJobRunning) {
-    console.log('⏭️ [CRON] Previous job still running, skipping...');
-    return;
-  }
-  
-  if (!canMakeApiRequest()) {
-    console.log('🚫 [CRON] API rate limit reached, skipping scheduled fetch');
-    return;
-  }
-  
-  cronJobRunning = true;
-  try {
-    console.log('⏰ [CRON] Scheduled news fetch (8x daily - every 3 hours)');
-    const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true });
-    console.log(`✅ [CRON] Fetch completed: ${result.success ? 'Success' : 'Failed'}`);
-  } catch (error) {
-    console.error('❌ [CRON] Fetch error:', error.message);
-  } finally {
-    cronJobRunning = false;
-  }
-});
+// Development: Every 15 minutes for testing
+if (isDevelopment) {
+  cron.schedule('*/15 * * * *', async () => {
+    if (cronJobRunning || !canMakeApiRequest()) {
+      console.log('⏭️ [DEV-CRON] Skipping - job running or rate limited');
+      return;
+    }
+    
+    cronJobRunning = true;
+    try {
+      console.log('⏰ [DEV-CRON] Development news fetch (every 15 minutes)');
+      const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true });
+      console.log(`✅ [DEV-CRON] Fetch completed: ${result.success ? 'Success' : 'Failed'}`);
+    } catch (error) {
+      console.error('❌ [DEV-CRON] Fetch error:', error.message);
+    } finally {
+      cronJobRunning = false;
+    }
+  });
+  console.log('⏰ Development CRON: Every 15 minutes');
+}
 
+// Production: Every 2 hours
+if (isProduction) {
+  cron.schedule('0 */2 * * *', async () => {
+    if (cronJobRunning || !canMakeApiRequest()) {
+      console.log('⏭️ [PROD-CRON] Skipping - job running or rate limited');
+      return;
+    }
+    
+    cronJobRunning = true;
+    try {
+      console.log('⏰ [PROD-CRON] Production news fetch (every 2 hours)');
+      const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true });
+      console.log(`✅ [PROD-CRON] Fetch completed: ${result.success ? 'Success' : 'Failed'}`);
+    } catch (error) {
+      console.error('❌ [PROD-CRON] Fetch error:', error.message);
+    } finally {
+      cronJobRunning = false;
+    }
+  });
+  console.log('⏰ Production CRON: Every 2 hours');
+}
 
 // Refresh external channels every 24 hours (no API calls)
-cron.schedule('0 1 * * *', async () => { // 1AM daily
+cron.schedule('0 1 * * *', async () => {
   try {
     console.log('📺 [CRON] Refreshing external channels...');
     const success = await refreshExternalChannelsServer();
