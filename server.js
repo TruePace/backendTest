@@ -54,12 +54,12 @@ global.newsState = {
   lastSuccessfulFetch: null,
   consecutiveFailures: 0,
   activeFetchPromise: null,
-  // 🆕 Rate limiting fields
+  // 🆕 Updated rate limiting fields for 8 requests/day
   dailyRequestCount: 0,
   lastResetDate: new Date().toDateString(),
   rateLimitHit: false,
-  maxDailyRequests: 90, // Stay under 100 limit with buffer
-  minimumInterval: 4 * 60 * 60 * 1000, // MINIMUM 4 hours between requests
+  maxDailyRequests: 8, // Changed from 90 to 8 for every 3 hours
+  minimumInterval: 3 * 60 * 60 * 1000, // Changed from 4 hours to 3 hours
   lastFetchSuccess: false
 };
 
@@ -325,7 +325,7 @@ app.get('/api/health/keep-alive', async (req, res) => {
       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
     }
   });
-  // 🚨 REMOVED: No automatic triggering
+ 
 });
 
 // Manual force fetch with warnings
@@ -380,7 +380,68 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
   }
 });
 
-// 🚨 REMOVED: ensureFreshNewsMiddleware - no automatic triggering
+// Cron-friendly endpoint for automatic news fetching
+app.post('/api/cron/fetch-news', async (req, res) => {
+  try {
+    console.log('🔔 [CRON ENDPOINT] Automatic news fetch triggered');
+    console.log(`📡 [CRON] Request from IP: ${req.ipAddress}`);
+    
+    // Check rate limits
+    if (!canMakeApiRequest()) {
+      console.log('🚫 [CRON] Rate limit protection active');
+      return res.status(429).json({
+        success: false,
+        reason: 'rate_limit_protection',
+        dailyRequests: global.newsState.dailyRequestCount,
+        maxDaily: global.newsState.maxDailyRequests,
+        message: 'Daily API limit reached or too soon since last request'
+      });
+    }
+    
+    // Force a background fetch
+    const result = await triggerNewsFetch(
+      { ip: req.ipAddress || '8.8.8.8' }, 
+      { force: false, background: true }
+    );
+    
+    const response = {
+      success: result.success,
+      timestamp: new Date().toISOString(),
+      articlesProcessed: result.articlesCount || 0,
+      dailyUsage: `${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests}`,
+      nextScheduled: 'In 3 hours',
+      reason: result.reason || 'completed'
+    };
+    
+    if (result.success) {
+      console.log(`✅ [CRON] Successfully processed ${result.articlesCount} articles`);
+      res.json(response);
+    } else {
+      console.log(`⚠️ [CRON] Fetch failed: ${result.reason || result.error}`);
+      res.status(400).json(response);
+    }
+    
+  } catch (error) {
+    console.error('❌ [CRON ENDPOINT] Error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Simple health endpoint for cron-job.org
+app.get('/api/cron/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: Math.round(process.uptime()),
+    canFetch: canMakeApiRequest(),
+    dailyUsage: `${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests}`,
+    lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+  });
+});
 
 // Mount all routes (without auto-triggering middleware)
 app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute);
@@ -499,7 +560,7 @@ cron.schedule('* * * * *', async () => {
 // 🆕 MUCH LESS FREQUENT: Fetch external news only 4 times per day maximum
 let cronJobRunning = false;
 
-cron.schedule('0 6,12,18,23 * * *', async () => { // 6AM, 12PM, 6PM, 11PM
+cron.schedule('0 */3 * * *', async () => { // Every 3 hours: 0:00, 3:00, 6:00, 9:00, 12:00, 15:00, 18:00, 21:00
   if (cronJobRunning) {
     console.log('⏭️ [CRON] Previous job still running, skipping...');
     return;
@@ -512,12 +573,16 @@ cron.schedule('0 6,12,18,23 * * *', async () => { // 6AM, 12PM, 6PM, 11PM
   
   cronJobRunning = true;
   try {
-    console.log('⏰ [CRON] Scheduled news fetch (4x daily)');
-    await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true });
+    console.log('⏰ [CRON] Scheduled news fetch (8x daily - every 3 hours)');
+    const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true });
+    console.log(`✅ [CRON] Fetch completed: ${result.success ? 'Success' : 'Failed'}`);
+  } catch (error) {
+    console.error('❌ [CRON] Fetch error:', error.message);
   } finally {
     cronJobRunning = false;
   }
 });
+
 
 // Refresh external channels every 24 hours (no API calls)
 cron.schedule('0 1 * * *', async () => { // 1AM daily
