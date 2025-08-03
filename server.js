@@ -1,4 +1,4 @@
-// Enhanced server.js with proper cold start handling for Render.com
+// Enhanced server.js with aggressive rate limiting for NewsAPI free tier
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -46,39 +46,96 @@ if (!process.env.PARTNER_API_URL) {
 // Initialize Firebase
 await initializeApp();
 
-// Global state management for news fetching
+// 🚨 ENHANCED: Rate limit tracking for NewsAPI free tier (100 requests/day)
 global.newsState = {
   lastFetch: 0,
   isFetching: false,
   fetchCount: 0,
   lastSuccessfulFetch: null,
   consecutiveFailures: 0,
-   activeFetchPromise: null // NEW: Track active promise
+  activeFetchPromise: null,
+  // 🆕 Rate limiting fields
+  dailyRequestCount: 0,
+  lastResetDate: new Date().toDateString(),
+  rateLimitHit: false,
+  maxDailyRequests: 90, // Stay under 100 limit with buffer
+  minimumInterval: 4 * 60 * 60 * 1000, // MINIMUM 4 hours between requests
+  lastFetchSuccess: false
 };
 
-// Helper function to check if fresh news is needed
+// 🆕 Rate limit checker
+const canMakeApiRequest = () => {
+  const today = new Date().toDateString();
+  
+  // Reset counter if new day
+  if (global.newsState.lastResetDate !== today) {
+    global.newsState.dailyRequestCount = 0;
+    global.newsState.lastResetDate = today;
+    global.newsState.rateLimitHit = false;
+    console.log('🔄 Daily API request counter reset');
+  }
+  
+  // Check daily limit
+  if (global.newsState.dailyRequestCount >= global.newsState.maxDailyRequests) {
+    console.log(`🚫 Daily API limit reached: ${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests}`);
+    global.newsState.rateLimitHit = true;
+    return false;
+  }
+  
+  // Check minimum time interval
+  const timeSinceLastFetch = Date.now() - global.newsState.lastFetch;
+  if (timeSinceLastFetch < global.newsState.minimumInterval) {
+    const remainingTime = Math.ceil((global.newsState.minimumInterval - timeSinceLastFetch) / (60 * 1000));
+    console.log(`⏰ Too soon to make API request. Wait ${remainingTime} minutes`);
+    return false;
+  }
+  
+  return true;
+};
+
+// 🆕 Much more restrictive freshness check
 const needsFreshNews = () => {
   const now = Date.now();
   const timeSinceLastFetch = now - global.newsState.lastFetch;
-  const fetchInterval = 15 * 60 * 1000; // 15 minutes
+  const minimumInterval = global.newsState.minimumInterval; // 4 hours minimum
   
-  // Always fetch if never fetched before
-  if (global.newsState.lastFetch === 0) return true;
+  // Never fetch if rate limit hit
+  if (global.newsState.rateLimitHit) {
+    console.log('🚫 Rate limit reached, not fetching news');
+    return false;
+  }
   
-  // Fetch if interval has passed
-  if (timeSinceLastFetch > fetchInterval) return true;
+  // Never fetch if never fetched AND server has been up for less than 30 minutes
+  if (global.newsState.lastFetch === 0 && process.uptime() < 30 * 60) {
+    console.log('⏳ Server recently started, delaying first fetch');
+    return false;
+  }
   
-  // Force fetch if too many consecutive failures
-  if (global.newsState.consecutiveFailures >= 3) return true;
+  // Only fetch if minimum interval has passed
+  if (timeSinceLastFetch > minimumInterval) {
+    console.log(`✅ ${Math.round(timeSinceLastFetch / (60 * 1000))} minutes since last fetch - can fetch now`);
+    return true;
+  }
   
+  console.log(`⏰ Only ${Math.round(timeSinceLastFetch / (60 * 1000))} minutes since last fetch - need to wait`);
   return false;
 };
 
-// Enhanced news fetching with retry and error handling
+// 🆕 Enhanced news fetching with strict rate limiting
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { background = false, force = false } = options;
   
-  // If there's already an active fetch promise, wait for it instead of starting new one
+  // 🚨 STRICT: Check rate limits first (unless absolutely forced)
+  if (!force && !canMakeApiRequest()) {
+    return { 
+      success: false, 
+      reason: 'rate_limit_protection',
+      dailyCount: global.newsState.dailyRequestCount,
+      maxDaily: global.newsState.maxDailyRequests
+    };
+  }
+  
+  // If there's already an active fetch promise, wait for it
   if (global.newsState.activeFetchPromise && !force) {
     console.log('⏳ Waiting for existing news fetch to complete...');
     try {
@@ -88,14 +145,12 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     }
   }
   
-  const isRecentStartup = process.uptime() < 300;
-  
-  if (!force && !isRecentStartup && global.newsState.isFetching) {
+  if (!force && global.newsState.isFetching) {
     console.log('⏭️ News fetch already in progress, skipping...');
     return { success: false, reason: 'already_fetching' };
   }
   
-  if (!force && !isRecentStartup && !needsFreshNews()) {
+  if (!force && !needsFreshNews()) {
     console.log('⏰ Fresh news not needed yet');
     return { success: false, reason: 'not_needed' };
   }
@@ -106,40 +161,45 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
       global.newsState.isFetching = true;
       global.newsState.lastFetch = Date.now();
       global.newsState.fetchCount++;
+      global.newsState.dailyRequestCount++; // 🆕 Increment daily counter
       
-      const startupIndicator = isRecentStartup ? ' (STARTUP)' : '';
-      console.log(`🚀 Starting news fetch #${global.newsState.fetchCount}${startupIndicator} (${background ? 'background' : 'foreground'})...`);
+      console.log(`🚀 API Request #${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests} (Total: ${global.newsState.fetchCount})${background ? ' (background)' : ''}`);
       
       const results = await fetchExternalNewsServer(ipInfo);
       
       global.newsState.lastSuccessfulFetch = Date.now();
       global.newsState.consecutiveFailures = 0;
+      global.newsState.lastFetchSuccess = true;
       
-      console.log(`✅ News fetch #${global.newsState.fetchCount} completed: ${results.length} articles`);
+      console.log(`✅ API request successful: ${results.length} articles`);
       
       return { success: true, articlesCount: results.length };
       
     } catch (error) {
       global.newsState.consecutiveFailures++;
-      console.error(`❌ News fetch #${global.newsState.fetchCount} failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
+      global.newsState.lastFetchSuccess = false;
       
-      if (isRecentStartup) {
-        global.newsState.lastFetch = Date.now() - (5 * 60 * 1000);
-      } else {
-        global.newsState.lastFetch = Date.now() - (10 * 60 * 1000);
+      // 🆕 Handle rate limit errors specifically
+      if (error.message.includes('rate limit') || error.message.includes('Rate limit')) {
+        console.error(`🚫 Rate limit hit! Marking as rate limited.`);
+        global.newsState.rateLimitHit = true;
+        global.newsState.dailyRequestCount = global.newsState.maxDailyRequests; // Max out counter
       }
+      
+      console.error(`❌ News fetch failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
+      
+      // Set longer backoff on failure
+      global.newsState.lastFetch = Date.now() - (2 * 60 * 60 * 1000); // 2 hours ago
       
       return { success: false, error: error.message };
       
     } finally {
       global.newsState.isFetching = false;
-      global.newsState.activeFetchPromise = null; // Clear the promise
+      global.newsState.activeFetchPromise = null;
     }
   })();
   
-  // Store the active promise
   global.newsState.activeFetchPromise = fetchPromise;
-  
   return fetchPromise;
 };
 
@@ -201,7 +261,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// CRITICAL: Wake-up endpoint that Render health checks can use
+// Basic wake-up endpoint
 app.get('/', (req, res) => {
   res.json({ 
     status: 'alive',
@@ -210,102 +270,87 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check endpoint that triggers news fetch
+// 🆕 Non-triggering health check
 app.get('/health', async (req, res) => {
-  const needsFresh = needsFreshNews();
-  
   const status = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    newsState: {
-      lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
-      isFetching: global.newsState.isFetching,
-      fetchCount: global.newsState.fetchCount,
-      needsFresh: needsFresh
+    apiLimits: {
+      dailyRequests: global.newsState.dailyRequestCount,
+      maxDaily: global.newsState.maxDailyRequests,
+      rateLimitHit: global.newsState.rateLimitHit,
+      lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
     }
   };
   
-  // Send response immediately
   res.json(status);
+  // 🚨 REMOVED: No automatic triggering on health check
+});
+
+// 🆕 Conservative wake endpoint
+app.get('/wake', async (req, res) => {
+  console.log('🔔 Wake endpoint called');
   
-  // ALWAYS trigger fetch on health check if server just woke up
-  if (process.uptime() < 300) { // If server has been up for less than 5 minutes
-    console.log('🔄 Health check detected recent startup - forcing news fetch');
-    triggerNewsFetch({ ip: req.ipAddress }, { force: true, background: true });
-  } else if (needsFresh) {
-    console.log('📰 Health check triggering background news fetch...');
-    triggerNewsFetch({ ip: req.ipAddress }, { background: true });
+  res.json({ 
+    status: 'awake', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    rateLimitStatus: {
+      dailyRequests: global.newsState.dailyRequestCount,
+      maxDaily: global.newsState.maxDailyRequests,
+      canFetch: canMakeApiRequest()
+    }
+  });
+  
+  // 🚨 ONLY fetch if we haven't fetched today AND server just started
+  if (global.newsState.dailyRequestCount === 0 && process.uptime() < 600) {
+    console.log('🚀 First fetch of the day after cold start...');
+    setTimeout(() => {
+      triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { force: false, background: true });
+    }, 10000); // Wait 10 seconds
   }
 });
 
-// CRITICAL: Wake-up endpoint specifically for Render cold starts
-app.get('/wake', async (req, res) => {
-  const startTime = Date.now();
-  console.log('🔔 Wake endpoint called - starting aggressive initialization...');
-  
-  // Immediately respond to prevent timeout
-  res.json({ 
-    status: 'waking up', 
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    action: 'triggering_aggressive_news_fetch'
-  });
-  
-  // Start aggressive background initialization
-  setTimeout(async () => {
-    try {
-      console.log('🚀 Background: Starting news fetch after wake...');
-      
-      // Force immediate news fetch regardless of timing
-      const result = await triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { 
-        force: true, 
-        background: false // Make it foreground for wake calls
-      });
-      
-      const duration = Date.now() - startTime;
-      console.log(`⏱️ Wake sequence completed in ${duration}ms:`, result);
-      
-    } catch (error) {
-      console.error('❌ Background wake sequence failed:', error);
-    }
-  }, 100); // Start immediately
-});
-
-// Enhanced keep-alive endpoint
+// 🆕 Conservative keep-alive
 app.get('/api/health/keep-alive', async (req, res) => {
-  const needsFresh = needsFreshNews();
-  
-  // Always respond immediately
   res.json({ 
     status: 'alive', 
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
-    lastNewsFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
-    needsFreshNews: needsFresh,
-    isFetching: global.newsState.isFetching,
-    fetchCount: global.newsState.fetchCount
+    apiStatus: {
+      dailyRequests: global.newsState.dailyRequestCount,
+      maxDaily: global.newsState.maxDailyRequests,
+      rateLimitHit: global.newsState.rateLimitHit,
+      lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+    }
   });
-  
-  // Trigger background fetch if needed
-  if (needsFresh) {
-    console.log('📰 Keep-alive triggering background news fetch...');
-    triggerNewsFetch({ ip: req.ipAddress }, { background: true });
-  }
+  // 🚨 REMOVED: No automatic triggering
 });
 
-// Force fresh news endpoint
+// Manual force fetch with warnings
 app.post('/api/health/force-fresh-news', async (req, res) => {
   try {
     const startTime = Date.now();
     console.log('🚀 Force fresh news requested');
     
+    // 🆕 Warn about rate limits
+    if (!canMakeApiRequest()) {
+      return res.status(429).json({
+        success: false,
+        error: 'API rate limit protection - request blocked',
+        dailyRequests: global.newsState.dailyRequestCount,
+        maxDaily: global.newsState.maxDailyRequests,
+        rateLimitHit: global.newsState.rateLimitHit,
+        message: 'Too many API requests today. Try again tomorrow or use manual content upload.'
+      });
+    }
+    
     const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
     const isUrgent = req.body.urgent || false;
     
-    console.log(`📡 ${isUrgent ? '[URGENT]' : ''} Forcing news fetch...`);
+    console.log(`📡 ${isUrgent ? '[URGENT]' : ''} Forcing news fetch (${global.newsState.dailyRequestCount + 1}/${global.newsState.maxDailyRequests})...`);
     
-    // Always force fetch when explicitly requested
     const result = await triggerNewsFetch(ipInfo, { force: true, background: false });
     
     const duration = Date.now() - startTime;
@@ -317,7 +362,11 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
         : `Failed: ${result.reason || result.error}`,
       articlesProcessed: result.articlesCount || 0,
       duration: duration,
-      urgent: isUrgent,
+      apiUsage: {
+        dailyRequests: global.newsState.dailyRequestCount,
+        maxDaily: global.newsState.maxDailyRequests,
+        remaining: global.newsState.maxDailyRequests - global.newsState.dailyRequestCount
+      },
       timestamp: new Date().toISOString()
     });
     
@@ -331,22 +380,9 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
   }
 });
 
-// CRITICAL: Middleware that ensures fresh news on important endpoints
-const ensureFreshNewsMiddleware = (req, res, next) => {
-  // Only trigger on GET requests to avoid duplicate fetches
-  if (req.method === 'GET' && needsFreshNews()) {
-    console.log('🔄 Content request triggering background news fetch...');
-    triggerNewsFetch({ ip: req.ipAddress }, { background: true });
-  }
-  next();
-};
+// 🚨 REMOVED: ensureFreshNewsMiddleware - no automatic triggering
 
-// Apply fresh news middleware to content routes
-app.use('/api/HeadlineNews/Channel', ensureFreshNewsMiddleware);
-app.use('/api/HeadlineNews/GetJustIn', ensureFreshNewsMiddleware);
-app.use('/api/HeadlineNews/Content', ensureFreshNewsMiddleware);
-
-// Mount all routes
+// Mount all routes (without auto-triggering middleware)
 app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute);
 app.use('/api/HeadlineNews/Channel', ExternalNewsRoute);
 app.use('/api/location', LocationRoute);
@@ -370,12 +406,19 @@ const externalNewsRouter = express.Router();
 createExternalNewsRoute(externalNewsRouter);
 app.use('/api/external-news', externalNewsRouter);
 
-// Debug endpoint
+// Enhanced debug endpoint
 app.get('/api/debug/status', (req, res) => {
   res.json({
     serverTime: new Date().toISOString(),
     uptime: `${Math.round(process.uptime() / 60)} minutes`,
     newsState: global.newsState,
+    apiLimits: {
+      dailyRequests: global.newsState.dailyRequestCount,
+      maxDaily: global.newsState.maxDailyRequests,
+      rateLimitHit: global.newsState.rateLimitHit,
+      canMakeRequest: canMakeApiRequest(),
+      nextAllowedRequest: global.newsState.lastFetch + global.newsState.minimumInterval
+    },
     environment: {
       NODE_ENV: process.env.NODE_ENV,
       hasPartnerAPI: !!process.env.PARTNER_API_URL,
@@ -396,30 +439,21 @@ mongoose.connect(process.env.MONGO, {
 .then(async () => {
   console.log('✅ Connected to MongoDB');
   
-  // CRITICAL: Run emergency duplicate cleanup on startup
   console.log('🧹 Running emergency duplicate cleanup on startup...');
   await CleanupService.cleanupDuplicatesNow();
   
   setupChangeStream();
-  
-  // Start cleanup service
   CleanupService.startPeriodicCleanup();
   
-  // CRITICAL: Always fetch news immediately on startup - regardless of last fetch time
-  console.log('🌅 Server starting - fetching initial news with force...');
-  await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true, background: false });
+  // 🚨 REMOVED: Automatic startup fetch
+  console.log('🌅 Server starting - no automatic news fetch to preserve API limits');
   
   // Start server
   server.listen(port, () => {
     console.log(`✅ Server running on port ${port}`);
-    console.log('🚀 Cold start handling active');
+    console.log('🚀 Rate-limited cold start handling active');
     console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
-    
-    // ADDITIONAL: Set up immediate fetch after server is ready
-    setTimeout(async () => {
-      console.log('🔄 Post-startup news fetch...');
-      await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
-    }, 5000); // 5 seconds after server starts
+    console.log(`🚫 API Rate Limiting: ${global.newsState.maxDailyRequests} requests/day max`);
   });
 })
 .catch(err => {
@@ -435,9 +469,9 @@ setInterval(async () => {
   } catch (error) {
     console.error('❌ Database heartbeat failed:', error);
   }
-}, 5 * 60 * 1000); // Every 5 minutes
+}, 5 * 60 * 1000);
 
-// CRON JOBS
+// CRON JOBS - Only internal operations, no API calls
 
 // Move expired Just In content to Headlines (every minute)
 cron.schedule('* * * * *', async () => {
@@ -462,26 +496,31 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// Fetch external news every 15 minutes
+// 🆕 MUCH LESS FREQUENT: Fetch external news only 4 times per day maximum
 let cronJobRunning = false;
 
-cron.schedule('*/15 * * * *', async () => {
+cron.schedule('0 6,12,18,23 * * *', async () => { // 6AM, 12PM, 6PM, 11PM
   if (cronJobRunning) {
     console.log('⏭️ [CRON] Previous job still running, skipping...');
     return;
   }
   
+  if (!canMakeApiRequest()) {
+    console.log('🚫 [CRON] API rate limit reached, skipping scheduled fetch');
+    return;
+  }
+  
   cronJobRunning = true;
   try {
-    console.log('⏰ [CRON] 15-minute news fetch triggered');
-    await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+    console.log('⏰ [CRON] Scheduled news fetch (4x daily)');
+    await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true });
   } finally {
     cronJobRunning = false;
   }
 });
 
-// Refresh external channels every 6 hours
-cron.schedule('0 */6 * * *', async () => {
+// Refresh external channels every 24 hours (no API calls)
+cron.schedule('0 1 * * *', async () => { // 1AM daily
   try {
     console.log('📺 [CRON] Refreshing external channels...');
     const success = await refreshExternalChannelsServer();
@@ -491,7 +530,7 @@ cron.schedule('0 */6 * * *', async () => {
   }
 });
 
-// Daily cleanup at midnight
+// Daily cleanup at midnight (no API calls)
 cron.schedule('0 0 * * *', async () => {
   try {
     console.log('🌙 [CRON] Running daily cleanup...');
@@ -502,7 +541,6 @@ cron.schedule('0 0 * * *', async () => {
       console.log(`✅ Cleanup completed: ${cleanupResult.duplicatesRemoved} duplicates, ${cleanupResult.expiredRemoved} expired`);
     }
     
-    // Additional cleanup for expired content
     const now = new Date();
     
     const internal = await Content.deleteMany({ 
