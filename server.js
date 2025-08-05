@@ -66,7 +66,7 @@ global.newsState = {
   lastResetDate: new Date().toDateString(),
   rateLimitHit: false,
   maxDailyRequests: isDevelopment ? 50 : 50, // More generous in development
-  minimumInterval: isDevelopment ? 10 * 60 * 1000 : 30 * 60 * 1000, // 10 min dev, 30min prod
+  minimumInterval: isDevelopment ? 20 * 60 * 1000 : 2 * 60 * 60 * 1000, // 10 min dev, 2hrs prod
   lastFetchSuccess: false
 };
 
