@@ -37,11 +37,16 @@ const __dirname = path.dirname(__filename);
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-// Detect environment
-const isDevelopment = process.env.NODE_ENV === 'development';
-const isProduction = process.env.NODE_ENV === 'production';
+// Environment detection with .env override
+const NODE_ENV = process.env.NODE_ENV?.toLowerCase() || 'development';
+const isDevelopment = NODE_ENV === 'development';
+const isProduction = NODE_ENV === 'production';
+
+// Auto-fetch control
+const shouldAutoFetch = process.env.AUTO_FETCH_ON_START === 'true';
 
 console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
+console.log(`🔧 Auto-fetch on start: ${shouldAutoFetch ? 'ENABLED' : 'DISABLED'}`);
 
 // Validate critical environment variables
 if (!process.env.PARTNER_API_URL) {
@@ -397,6 +402,11 @@ app.get('/api/cron/health', (req, res) => {
   });
 });
 
+
+
+
+
+
 // Mount all routes
 app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute);
 app.use('/api/HeadlineNews/Channel', ExternalNewsRoute);
@@ -446,7 +456,6 @@ app.get('/api/debug/status', (req, res) => {
   });
 });
 
-// MongoDB connection with startup fetch
 mongoose.connect(process.env.MONGO, {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
@@ -460,24 +469,38 @@ mongoose.connect(process.env.MONGO, {
   setupChangeStream();
   CleanupService.startPeriodicCleanup();
   
-  // 🚨 ALWAYS try startup fetch with relaxed restrictions
-  console.log('🌅 Server starting - triggering initial news fetch...');
-  setTimeout(async () => {
-    try {
-      const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true, force: false });
-      console.log(`🚀 Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
-    } catch (error) {
-      console.error('❌ Startup fetch failed:', error.message);
-    }
-  }, 5000);
+  // 🆕 Only auto-fetch if explicitly enabled
+  if (shouldAutoFetch) {
+    console.log('🌅 Auto-fetch enabled - triggering initial news fetch...');
+    setTimeout(async () => {
+      try {
+        const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true, force: false });
+        console.log(`🚀 Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
+      } catch (error) {
+        console.error('❌ Startup fetch failed:', error.message);
+      }
+    }, 5000);
+  } else {
+    console.log('⏭️ Auto-fetch disabled - no startup API call');
+    console.log('💡 Use manual endpoints or set AUTO_FETCH_ON_START=true to enable');
+  }
+  
   
   // Start server
   server.listen(port, () => {
     console.log(`✅ Server running on port ${port}`);
     console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
+      console.log(`🔧 Auto-fetch: ${shouldAutoFetch ? 'ENABLED' : 'DISABLED'}`);
     console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
     console.log(`🚫 Rate Limiting: RELAXED MODE - No daily limits, only timing limits`);
     console.log(`🤖 Cron Strategy: External cron-job.org + internal backup`);
+    
+    if (isDevelopment) {
+      console.log('🔧 Development Tips:');
+      console.log('   • Use POST /api/health/force-fresh-news to manually fetch');
+      console.log('   • Use GET /api/external-news/test-api to test API connection');
+      console.log('   • Use GET /api/debug/status to check current state');
+    }
   });
 })
 .catch(err => {
@@ -520,28 +543,7 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// 🚨 INTERNAL BACKUP CRON - More frequent in relaxed mode
-// let cronJobRunning = false;
 
-// cron.schedule('*/20 * * * *', async () => { // Every 20 minutes
-//   if (cronJobRunning) {
-//     console.log('⏭️ [INTERNAL-CRON] Skipping - job already running');
-//     return;
-//   }
-  
-//   cronJobRunning = true;
-//   try {
-//     console.log('⏰ [INTERNAL-CRON] Backup news fetch (every 20 minutes)');
-//     const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true, isCronJob: true });
-//     console.log(`✅ [INTERNAL-CRON] Fetch completed: ${result.success ? 'Success - ' + result.articlesCount + ' articles' : result.reason}`);
-//   } catch (error) {
-//     console.error('❌ [INTERNAL-CRON] Fetch error:', error.message);
-//   } finally {
-//     cronJobRunning = false;
-//   }
-// });
-
-// console.log('⏰ INTERNAL BACKUP CRON: Every 20 minutes (relaxed mode)');
 
 // Refresh external channels every 24 hours
 cron.schedule('0 1 * * *', async () => {
