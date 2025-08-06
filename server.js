@@ -446,14 +446,7 @@ app.get('/api/debug/status', (req, res) => {
   });
 });
 
-app.get('/api/debug/config', (req, res) => {
-  res.json({
-    nodeEnv: process.env.NODE_ENV || 'NOT SET',
-    partnerApiUrl: process.env.PARTNER_API_URL || 'NOT SET',
-    partnerApiWorking: !!process.env.PARTNER_API_URL,
-    timestamp: new Date().toISOString()
-  });
-});
+
 
 mongoose.connect(process.env.MONGO, {
   serverSelectionTimeoutMS: 5000,
