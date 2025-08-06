@@ -136,78 +136,66 @@ const needsFreshNews = (isCronJob = false) => {
   return false;
 };
 
-// Enhanced news fetching with RELAXED restrictions
+// 🚨 SIMPLIFIED triggerNewsFetch - Remove all restrictions
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { background = false, force = false, isCronJob = false } = options;
   
   console.log(`🚀 Fetch request: ${isCronJob ? 'CRON JOB' : 'REGULAR'} ${force ? '(FORCED)' : ''}`);
   
-  // 🚨 RELAXED: Check rate limits (much more permissive for cron jobs)
-  if (!force && !canMakeApiRequest(isCronJob)) {
-    return { 
-      success: false, 
-      reason: 'rate_limit_protection',
-      message: isCronJob ? 'Cron job rate limited' : 'Regular request rate limited'
-    };
-  }
-  
-  // If there's already an active fetch promise, wait for it
-  if (global.newsState.activeFetchPromise && !force) {
-    console.log('⏳ Waiting for existing news fetch to complete...');
-    try {
-      return await global.newsState.activeFetchPromise;
-    } catch (error) {
-      console.log('⚠️ Existing fetch failed, will start new one');
+  // 🚨 FORCE MODE - Skip ALL checks when force = true
+  if (force) {
+    console.log('🚀 FORCE MODE: Skipping all rate limit checks');
+  } else {
+    // Only check if already fetching (not force mode)
+    if (global.newsState && global.newsState.isFetching) {
+      console.log('⏳ Already fetching - skipping');
+      return { success: false, reason: 'already_fetching' };
     }
   }
-  
-  if (!force && global.newsState.isFetching) {
-    console.log('⏭️ News fetch already in progress, skipping...');
-    return { success: false, reason: 'already_fetching' };
-  }
-  
-  if (!force && !needsFreshNews(isCronJob)) {
-    console.log('⏰ Fresh news not needed yet');
-    return { success: false, reason: 'not_needed' };
-  }
 
-  // Create the fetch promise and store it globally
-  const fetchPromise = (async () => {
-    try {
+  try {
+    // Set fetching state
+    if (global.newsState) {
       global.newsState.isFetching = true;
       global.newsState.lastFetch = Date.now();
-      global.newsState.fetchCount++;
-      
-      console.log(`🚀 ${isCronJob ? 'CRON' : 'REGULAR'} API Request #${global.newsState.fetchCount}${background ? ' (background)' : ''}`);
-      
-      const results = await fetchExternalNewsServer(ipInfo);
-      
+      global.newsState.fetchCount = (global.newsState.fetchCount || 0) + 1;
+    }
+    
+    console.log(`🚀 Starting API call #${global.newsState?.fetchCount || 1}`);
+    console.log(`🔗 Using Partner API: ${process.env.PARTNER_API_URL}`);
+    
+    const results = await fetchExternalNewsServer(ipInfo);
+    
+    // Update success state
+    if (global.newsState) {
       global.newsState.lastSuccessfulFetch = Date.now();
       global.newsState.consecutiveFailures = 0;
       global.newsState.lastFetchSuccess = true;
-      
-      console.log(`✅ API request successful: ${results.length} articles`);
-      
-      return { success: true, articlesCount: results.length };
-      
-    } catch (error) {
-      global.newsState.consecutiveFailures++;
+    }
+    
+    console.log(`✅ API request successful: ${results.length} articles`);
+    
+    return { success: true, articlesCount: results.length };
+    
+  } catch (error) {
+    // Update failure state
+    if (global.newsState) {
+      global.newsState.consecutiveFailures = (global.newsState.consecutiveFailures || 0) + 1;
       global.newsState.lastFetchSuccess = false;
-      
-      console.error(`❌ News fetch failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
-      
-      return { success: false, error: error.message };
-      
-    } finally {
+    }
+    
+    console.error(`❌ News fetch failed:`, error.message);
+    
+    return { success: false, error: error.message };
+    
+  } finally {
+    // Clear fetching state
+    if (global.newsState) {
       global.newsState.isFetching = false;
       global.newsState.activeFetchPromise = null;
     }
-  })();
-  
-  global.newsState.activeFetchPromise = fetchPromise;
-  return fetchPromise;
+  }
 };
-
 // App configuration
 const app = express();
 const server = http.createServer(app);
@@ -297,57 +285,59 @@ app.get('/health', async (req, res) => {
   res.json(status);
 });
 
-// 🚨 NEW: Cron endpoint that accepts BOTH GET and POST
 app.all('/api/cron/fetch-news', async (req, res) => {
   try {
     console.log('\n🔔 ============ CRON JOB TRIGGERED ============');
     console.log(`📡 Method: ${req.method}`);
     console.log(`📡 Request from IP: ${req.ipAddress}`);
-    console.log(`🌍 Environment: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`⏰ Current time: ${new Date().toISOString()}`);
+    console.log(`🔗 Partner API URL: ${process.env.PARTNER_API_URL || 'NOT SET'}`);
     
-    // 🚨 RELAXED: Allow cron jobs with minimal restrictions
+    // 🚨 BYPASS ALL RATE LIMITING FOR DEBUGGING
+    console.log('🚀 BYPASSING ALL RATE LIMITING - FORCING FETCH');
+    
     const result = await triggerNewsFetch(
       { ip: req.ipAddress || '8.8.8.8' }, 
-      { force: false, background: true, isCronJob: true }
+      { force: true, background: true, isCronJob: true } // FORCE = TRUE
     );
     
     const response = {
       success: result.success,
       timestamp: new Date().toISOString(),
       articlesProcessed: result.articlesCount || 0,
-      environment: isDevelopment ? 'development' : 'production',
+      environment: process.env.NODE_ENV || 'development',
       reason: result.reason || 'completed',
       cronType: 'external',
       method: req.method,
-      rateLimiting: 'RELAXED MODE'
+      rateLimiting: 'BYPASSED FOR DEBUGGING',
+      partnerApiUrl: process.env.PARTNER_API_URL ? 'configured' : 'NOT CONFIGURED',
+      errorMessage: result.error || null
     };
     
     if (result.success) {
       console.log(`✅ [CRON] Successfully processed ${result.articlesCount} articles`);
-      res.json(response);
     } else {
-      console.log(`⚠️ [CRON] Fetch result: ${result.reason || result.error}`);
-      // Don't return error status - cron-job.org might think it failed
-      res.json({
-        ...response,
-        message: result.reason === 'not_needed' ? 'No fresh news needed yet' : result.error
-      });
+      console.log(`⚠️ [CRON] Fetch failed: ${result.reason || result.error}`);
     }
+    
     console.log('🏁 ============ CRON JOB COMPLETED ============\n');
+    
+    res.json(response);
     
   } catch (error) {
     console.error('\n❌ ============ CRON JOB FAILED ============');
     console.error(`❌ Error: ${error.message}`);
+    console.error(`❌ Stack: ${error.stack}`);
     console.error('🏁 ============ CRON JOB FAILED ============\n');
     
-    // Still return 200 to prevent cron-job.org from thinking it's broken
     res.json({
       success: false,
       error: error.message,
       timestamp: new Date().toISOString(),
-      environment: isProduction ? 'production' : 'development',
-      rateLimiting: 'RELAXED MODE'
+      environment: process.env.NODE_ENV || 'development',
+      rateLimiting: 'BYPASSED FOR DEBUGGING',
+      partnerApiUrl: process.env.PARTNER_API_URL ? 'configured' : 'NOT CONFIGURED'
     });
   }
 });
@@ -453,6 +443,15 @@ app.get('/api/debug/status', (req, res) => {
       connected: mongoose.connection.readyState === 1,
       host: mongoose.connection.host
     }
+  });
+});
+
+app.get('/api/debug/config', (req, res) => {
+  res.json({
+    nodeEnv: process.env.NODE_ENV || 'NOT SET',
+    partnerApiUrl: process.env.PARTNER_API_URL || 'NOT SET',
+    partnerApiWorking: !!process.env.PARTNER_API_URL,
+    timestamp: new Date().toISOString()
   });
 });
 
