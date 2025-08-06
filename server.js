@@ -41,7 +41,7 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 // const isDevelopment = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 // const isProduction = process.env.NODE_ENV === 'production';
 
-const isDevelopment = process.env.NODE_ENV === 'development';
+const isDevelopment = process.env.NODE_ENV === 'development' ;
 const isProduction = process.env.NODE_ENV === 'production';
 
 console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
@@ -68,8 +68,8 @@ global.newsState = {
   dailyRequestCount: 0,
   lastResetDate: new Date().toDateString(),
   rateLimitHit: false,
-  maxDailyRequests: isDevelopment ? 50 : 50, // More generous in development
-  minimumInterval: isDevelopment ? 20 * 60 * 1000 :  60 * 60 * 1000, // 20 min dev, 1hrs prod
+  maxDailyRequests: isDevelopment ? 20 : 70, // More generous in development
+  minimumInterval: isDevelopment ? 20 * 60 * 1000 :  20 * 60 * 1000, // 20 min dev, 20mins prod
   lastFetchSuccess: false
 };
 
