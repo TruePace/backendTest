@@ -38,7 +38,10 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 // Detect environment
-const isDevelopment = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
+// const isDevelopment = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
+// const isProduction = process.env.NODE_ENV === 'production';
+
+const isDevelopment = process.env.NODE_ENV === 'development';
 const isProduction = process.env.NODE_ENV === 'production';
 
 console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
@@ -66,7 +69,7 @@ global.newsState = {
   lastResetDate: new Date().toDateString(),
   rateLimitHit: false,
   maxDailyRequests: isDevelopment ? 50 : 50, // More generous in development
-  minimumInterval: isDevelopment ? 20 * 60 * 1000 : 2 * 60 * 60 * 1000, // 10 min dev, 2hrs prod
+  minimumInterval: isDevelopment ? 20 * 60 * 1000 :  60 * 60 * 1000, // 20 min dev, 1hrs prod
   lastFetchSuccess: false
 };
 
@@ -272,14 +275,121 @@ app.get('/', (req, res) => {
   });
 });
 
-// 🚨 MODIFIED: Health check - NO AUTO-TRIGGER in production
+// // 🚨 MODIFIED: Health check - NO AUTO-TRIGGER in production
+// app.get('/health', async (req, res) => {
+//   const status = {
+//     status: 'healthy',
+//     timestamp: new Date().toISOString(),
+//     uptime: process.uptime(),
+//     environment: isDevelopment ? 'development' : 'production',
+//     cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
+//     apiLimits: {
+//       dailyRequests: global.newsState.dailyRequestCount,
+//       maxDaily: global.newsState.maxDailyRequests,
+//       rateLimitHit: global.newsState.rateLimitHit,
+//       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+//     }
+//   };
+  
+//   res.json(status);
+  
+//   // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
+//   if (isDevelopment && needsFreshNews() && canMakeApiRequest()) {
+//     console.log('🚀 [DEV] Health check triggered automatic news fetch');
+//     setTimeout(() => {
+//       triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
+//     }, 2000);
+//   } else if (isProduction) {
+//     console.log('🏭 [PROD] Health check - relying on external cron-job.org');
+//   }
+// });
+
+// // 🚨 MODIFIED: Wake endpoint - NO AUTO-TRIGGER in production
+// app.get('/wake', async (req, res) => {
+//   console.log('🔔 Wake endpoint called');
+  
+//   res.json({ 
+//     status: 'awake', 
+//     timestamp: new Date().toISOString(),
+//     uptime: process.uptime(),
+//     environment: isDevelopment ? 'development' : 'production',
+//     cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
+//     rateLimitStatus: {
+//       dailyRequests: global.newsState.dailyRequestCount,
+//       maxDaily: global.newsState.maxDailyRequests,
+//       canFetch: canMakeApiRequest()
+//     }
+//   });
+  
+//   // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
+//   if (isDevelopment && canMakeApiRequest() && needsFreshNews()) {
+//     console.log('🚀 [DEV] Wake triggered immediate news fetch...');
+//     setTimeout(() => {
+//       triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
+//     }, 1000);
+//   } else if (isProduction) {
+//     console.log('🏭 [PROD] Wake called - relying on external cron-job.org');
+//   }
+// });
+
+// // 🚨 MODIFIED: Keep-alive - NO AUTO-TRIGGER in production
+// app.get('/api/health/keep-alive', async (req, res) => {
+//   res.json({ 
+//     status: 'alive', 
+//     timestamp: new Date().toISOString(),
+//     uptime: Math.round(process.uptime()),
+//     environment: isDevelopment ? 'development' : 'production',
+//     cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
+//     apiStatus: {
+//       dailyRequests: global.newsState.dailyRequestCount,
+//       maxDaily: global.newsState.maxDailyRequests,
+//       rateLimitHit: global.newsState.rateLimitHit,
+//       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+//     }
+//   });
+  
+//   // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
+//   if (isDevelopment && needsFreshNews() && canMakeApiRequest()) {
+//     console.log('🚀 [DEV] Keep-alive triggered periodic news fetch');
+//     setTimeout(() => {
+//       triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
+//     }, 3000);
+//   } else if (isProduction) {
+//     console.log('🏭 [PROD] Keep-alive - relying on external cron-job.org');
+//   }
+// });
+
+
+// 2. Wake endpoint - ONLY keep server awake, don't fetch news
+app.get('/wake', async (req, res) => {
+  console.log('🔔 Wake endpoint called');
+  
+  res.json({ 
+    status: 'awake', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: isProduction ? 'production' : 'development',
+    message: isProduction ? 'Server awake - no auto-fetch in production' : 'Server awake - dev mode',
+    rateLimitStatus: {
+      dailyRequests: global.newsState.dailyRequestCount,
+      maxDaily: global.newsState.maxDailyRequests,
+      canFetch: canMakeApiRequest()
+    }
+  });
+  
+  // 🚨 NEVER auto-trigger news fetch in production via wake-up
+  // Let the dedicated cron job handle news fetching
+  console.log('🏭 Wake-up completed - dedicated cron handles news fetching');
+});
+
+// 3. Health endpoint - same fix
 app.get('/health', async (req, res) => {
   const status = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    environment: isDevelopment ? 'development' : 'production',
-    cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
+    environment: isProduction ? 'production' : 'development',
+    message: isProduction ? 'Healthy - relying on external cron for news' : 'Healthy - dev auto-fetch enabled',
     apiLimits: {
       dailyRequests: global.newsState.dailyRequestCount,
       maxDaily: global.newsState.maxDailyRequests,
@@ -290,53 +400,18 @@ app.get('/health', async (req, res) => {
   
   res.json(status);
   
-  // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
-  if (isDevelopment && needsFreshNews() && canMakeApiRequest()) {
-    console.log('🚀 [DEV] Health check triggered automatic news fetch');
-    setTimeout(() => {
-      triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
-    }, 2000);
-  } else if (isProduction) {
-    console.log('🏭 [PROD] Health check - relying on external cron-job.org');
-  }
+  // 🚨 NEVER auto-trigger in production - only for local development
+  console.log('🏭 Health check - no auto-fetch in production');
 });
 
-// 🚨 MODIFIED: Wake endpoint - NO AUTO-TRIGGER in production
-app.get('/wake', async (req, res) => {
-  console.log('🔔 Wake endpoint called');
-  
-  res.json({ 
-    status: 'awake', 
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    environment: isDevelopment ? 'development' : 'production',
-    cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
-    rateLimitStatus: {
-      dailyRequests: global.newsState.dailyRequestCount,
-      maxDaily: global.newsState.maxDailyRequests,
-      canFetch: canMakeApiRequest()
-    }
-  });
-  
-  // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
-  if (isDevelopment && canMakeApiRequest() && needsFreshNews()) {
-    console.log('🚀 [DEV] Wake triggered immediate news fetch...');
-    setTimeout(() => {
-      triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
-    }, 1000);
-  } else if (isProduction) {
-    console.log('🏭 [PROD] Wake called - relying on external cron-job.org');
-  }
-});
-
-// 🚨 MODIFIED: Keep-alive - NO AUTO-TRIGGER in production
+// 4. Keep-alive endpoint - same fix
 app.get('/api/health/keep-alive', async (req, res) => {
   res.json({ 
     status: 'alive', 
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
-    environment: isDevelopment ? 'development' : 'production',
-    cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
+    environment: isProduction ? 'production' : 'development',
+    message: isProduction ? 'Alive - external cron handles news' : 'Alive - dev mode',
     apiStatus: {
       dailyRequests: global.newsState.dailyRequestCount,
       maxDaily: global.newsState.maxDailyRequests,
@@ -345,16 +420,10 @@ app.get('/api/health/keep-alive', async (req, res) => {
     }
   });
   
-  // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
-  if (isDevelopment && needsFreshNews() && canMakeApiRequest()) {
-    console.log('🚀 [DEV] Keep-alive triggered periodic news fetch');
-    setTimeout(() => {
-      triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
-    }, 3000);
-  } else if (isProduction) {
-    console.log('🏭 [PROD] Keep-alive - relying on external cron-job.org');
-  }
+  // 🚨 NO auto-trigger in production
+  console.log('🏭 Keep-alive - server stays awake, cron handles news');
 });
+
 
 // Manual force fetch
 app.post('/api/health/force-fresh-news', async (req, res) => {
