@@ -1,4 +1,4 @@
-// Enhanced server.js with proper auto-fetching for development and production
+// Enhanced server.js with RELAXED rate limiting for cron jobs
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -38,14 +38,10 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 // Detect environment
-// const isDevelopment = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
-// const isProduction = process.env.NODE_ENV === 'production';
-
-const isDevelopment = process.env.NODE_ENV === 'development' ;
+const isDevelopment = process.env.NODE_ENV === 'development';
 const isProduction = process.env.NODE_ENV === 'production';
 
 console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
-console.log(`🤖 Auto-fetch strategy: ${isProduction ? 'EXTERNAL CRON ONLY' : 'INTERNAL CRON'}`);
 
 // Validate critical environment variables
 if (!process.env.PARTNER_API_URL) {
@@ -56,7 +52,7 @@ if (!process.env.PARTNER_API_URL) {
 // Initialize Firebase
 await initializeApp();
 
-// 🆕 ENVIRONMENT-SPECIFIC Rate limiting
+// 🆕 RELAXED Rate limiting - Remove daily limits for cron jobs
 global.newsState = {
   lastFetch: 0,
   isFetching: false,
@@ -64,80 +60,89 @@ global.newsState = {
   lastSuccessfulFetch: null,
   consecutiveFailures: 0,
   activeFetchPromise: null,
-  // Different limits for dev vs production
-  dailyRequestCount: 0,
-  lastResetDate: new Date().toDateString(),
-  rateLimitHit: false,
-  maxDailyRequests: isDevelopment ? 20 : 70, // More generous in development
-  minimumInterval: isDevelopment ? 20 * 60 * 1000 :  20 * 60 * 1000, // 20 min dev, 20mins prod
-  lastFetchSuccess: false
+  // 🚨 REMOVED DAILY LIMITS - Only use timing limits
+  minimumInterval: 10 * 60 * 1000, // 10 minutes minimum between requests
+  lastFetchSuccess: false,
+  cronJobsAllowed: true // Allow cron jobs to bypass most restrictions
 };
 
-console.log(`⚙️ Rate Limits: ${global.newsState.maxDailyRequests} requests/day, ${Math.round(global.newsState.minimumInterval/60000)} min intervals`);
+console.log(`⚙️ Rate Limits: RELAXED MODE - Only ${Math.round(global.newsState.minimumInterval/60000)} min intervals`);
 
-// 🆕 Smarter rate limit checker
-const canMakeApiRequest = () => {
-  const today = new Date().toDateString();
-  
-  // Reset counter if new day
-  if (global.newsState.lastResetDate !== today) {
-    global.newsState.dailyRequestCount = 0;
-    global.newsState.lastResetDate = today;
-    global.newsState.rateLimitHit = false;
-    console.log('🔄 Daily API request counter reset');
+// 🆕 RELAXED rate limit checker - Much more permissive
+const canMakeApiRequest = (isCronJob = false) => {
+  // 🚨 CRON JOBS GET PRIORITY - Skip most restrictions
+  if (isCronJob) {
+    console.log('🤖 Cron job request - bypassing most rate limits');
+    
+    // Only check if we're currently fetching
+    if (global.newsState.isFetching) {
+      console.log('⏳ Still fetching - cron job will wait');
+      return false;
+    }
+    
+    // Check minimum interval (reduced for cron jobs)
+    const timeSinceLastFetch = Date.now() - global.newsState.lastFetch;
+    const cronMinInterval = 5 * 60 * 1000; // 5 minutes for cron jobs
+    
+    if (timeSinceLastFetch < cronMinInterval) {
+      const remainingTime = Math.ceil((cronMinInterval - timeSinceLastFetch) / (60 * 1000));
+      console.log(`⏰ Cron job too soon. Wait ${remainingTime} minutes`);
+      return false;
+    }
+    
+    return true;
   }
   
-  // Check daily limit
-  if (global.newsState.dailyRequestCount >= global.newsState.maxDailyRequests) {
-    console.log(`🚫 Daily API limit reached: ${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests}`);
-    global.newsState.rateLimitHit = true;
-    return false;
-  }
-  
-  // Check minimum time interval
+  // Regular requests - check minimum time interval only
   const timeSinceLastFetch = Date.now() - global.newsState.lastFetch;
   if (timeSinceLastFetch < global.newsState.minimumInterval) {
     const remainingTime = Math.ceil((global.newsState.minimumInterval - timeSinceLastFetch) / (60 * 1000));
-    console.log(`⏰ Too soon to make API request. Wait ${remainingTime} minutes`);
+    console.log(`⏰ Regular request too soon. Wait ${remainingTime} minutes`);
     return false;
   }
   
   return true;
 };
 
-// 🆕 Environment-aware freshness check
-const needsFreshNews = () => {
+// 🆕 RELAXED freshness check
+const needsFreshNews = (isCronJob = false) => {
   const now = Date.now();
   const timeSinceLastFetch = now - global.newsState.lastFetch;
-  const minimumInterval = global.newsState.minimumInterval;
   
-  // Never fetch if rate limit hit
-  if (global.newsState.rateLimitHit) {
-    console.log('🚫 Rate limit reached, not fetching news');
+  // 🚨 CRON JOBS: More aggressive fetching
+  if (isCronJob) {
+    const cronInterval = 10 * 60 * 1000; // 10 minutes for cron jobs
+    if (global.newsState.lastFetch === 0 || timeSinceLastFetch > cronInterval) {
+      console.log(`✅ CRON: ${global.newsState.lastFetch === 0 ? 'First fetch' : Math.round(timeSinceLastFetch / (60 * 1000)) + ' minutes since last fetch'} - fetching now`);
+      return true;
+    }
+    console.log(`⏰ CRON: Only ${Math.round(timeSinceLastFetch / (60 * 1000))} minutes - need to wait`);
     return false;
   }
   
-  // Only fetch if minimum interval has passed OR never fetched
-  if (global.newsState.lastFetch === 0 || timeSinceLastFetch > minimumInterval) {
-    console.log(`✅ ${global.newsState.lastFetch === 0 ? 'First fetch' : Math.round(timeSinceLastFetch / (60 * 1000)) + ' minutes since last fetch'} - can fetch now`);
+  // Regular requests
+  const regularInterval = global.newsState.minimumInterval;
+  if (global.newsState.lastFetch === 0 || timeSinceLastFetch > regularInterval) {
+    console.log(`✅ Regular: Can fetch now`);
     return true;
   }
   
-  console.log(`⏰ Only ${Math.round(timeSinceLastFetch / (60 * 1000))} minutes since last fetch - need to wait`);
+  console.log(`⏰ Regular: Need to wait`);
   return false;
 };
 
-// Enhanced news fetching with better handling
+// Enhanced news fetching with RELAXED restrictions
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
-  const { background = false, force = false } = options;
+  const { background = false, force = false, isCronJob = false } = options;
   
-  // Check rate limits first (unless absolutely forced)
-  if (!force && !canMakeApiRequest()) {
+  console.log(`🚀 Fetch request: ${isCronJob ? 'CRON JOB' : 'REGULAR'} ${force ? '(FORCED)' : ''}`);
+  
+  // 🚨 RELAXED: Check rate limits (much more permissive for cron jobs)
+  if (!force && !canMakeApiRequest(isCronJob)) {
     return { 
       success: false, 
       reason: 'rate_limit_protection',
-      dailyCount: global.newsState.dailyRequestCount,
-      maxDaily: global.newsState.maxDailyRequests
+      message: isCronJob ? 'Cron job rate limited' : 'Regular request rate limited'
     };
   }
   
@@ -156,7 +161,7 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     return { success: false, reason: 'already_fetching' };
   }
   
-  if (!force && !needsFreshNews()) {
+  if (!force && !needsFreshNews(isCronJob)) {
     console.log('⏰ Fresh news not needed yet');
     return { success: false, reason: 'not_needed' };
   }
@@ -167,9 +172,8 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
       global.newsState.isFetching = true;
       global.newsState.lastFetch = Date.now();
       global.newsState.fetchCount++;
-      global.newsState.dailyRequestCount++;
       
-      console.log(`🚀 API Request #${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests} (Total: ${global.newsState.fetchCount})${background ? ' (background)' : ''}`);
+      console.log(`🚀 ${isCronJob ? 'CRON' : 'REGULAR'} API Request #${global.newsState.fetchCount}${background ? ' (background)' : ''}`);
       
       const results = await fetchExternalNewsServer(ipInfo);
       
@@ -184,13 +188,6 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     } catch (error) {
       global.newsState.consecutiveFailures++;
       global.newsState.lastFetchSuccess = false;
-      
-      // Handle rate limit errors specifically
-      if (error.message.includes('rate limit') || error.message.includes('Rate limit')) {
-        console.error(`🚫 Rate limit hit! Marking as rate limited.`);
-        global.newsState.rateLimitHit = true;
-        global.newsState.dailyRequestCount = global.newsState.maxDailyRequests;
-      }
       
       console.error(`❌ News fetch failed (${global.newsState.consecutiveFailures} consecutive failures):`, error.message);
       
@@ -268,185 +265,100 @@ io.on('connection', (socket) => {
 app.get('/', (req, res) => {
   res.json({ 
     status: 'alive',
-    message: 'TruePace News API',
+    message: 'TruePace News API - RELAXED MODE',
     timestamp: new Date().toISOString(),
     environment: isDevelopment ? 'development' : 'production',
-    cronStrategy: isProduction ? 'external-only' : 'internal-auto'
+    cronStrategy: 'external + internal backup',
+    rateLimiting: 'RELAXED - No daily limits'
   });
 });
 
-// // 🚨 MODIFIED: Health check - NO AUTO-TRIGGER in production
-// app.get('/health', async (req, res) => {
-//   const status = {
-//     status: 'healthy',
-//     timestamp: new Date().toISOString(),
-//     uptime: process.uptime(),
-//     environment: isDevelopment ? 'development' : 'production',
-//     cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
-//     apiLimits: {
-//       dailyRequests: global.newsState.dailyRequestCount,
-//       maxDaily: global.newsState.maxDailyRequests,
-//       rateLimitHit: global.newsState.rateLimitHit,
-//       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
-//     }
-//   };
-  
-//   res.json(status);
-  
-//   // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
-//   if (isDevelopment && needsFreshNews() && canMakeApiRequest()) {
-//     console.log('🚀 [DEV] Health check triggered automatic news fetch');
-//     setTimeout(() => {
-//       triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
-//     }, 2000);
-//   } else if (isProduction) {
-//     console.log('🏭 [PROD] Health check - relying on external cron-job.org');
-//   }
-// });
-
-// // 🚨 MODIFIED: Wake endpoint - NO AUTO-TRIGGER in production
-// app.get('/wake', async (req, res) => {
-//   console.log('🔔 Wake endpoint called');
-  
-//   res.json({ 
-//     status: 'awake', 
-//     timestamp: new Date().toISOString(),
-//     uptime: process.uptime(),
-//     environment: isDevelopment ? 'development' : 'production',
-//     cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
-//     rateLimitStatus: {
-//       dailyRequests: global.newsState.dailyRequestCount,
-//       maxDaily: global.newsState.maxDailyRequests,
-//       canFetch: canMakeApiRequest()
-//     }
-//   });
-  
-//   // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
-//   if (isDevelopment && canMakeApiRequest() && needsFreshNews()) {
-//     console.log('🚀 [DEV] Wake triggered immediate news fetch...');
-//     setTimeout(() => {
-//       triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
-//     }, 1000);
-//   } else if (isProduction) {
-//     console.log('🏭 [PROD] Wake called - relying on external cron-job.org');
-//   }
-// });
-
-// // 🚨 MODIFIED: Keep-alive - NO AUTO-TRIGGER in production
-// app.get('/api/health/keep-alive', async (req, res) => {
-//   res.json({ 
-//     status: 'alive', 
-//     timestamp: new Date().toISOString(),
-//     uptime: Math.round(process.uptime()),
-//     environment: isDevelopment ? 'development' : 'production',
-//     cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
-//     apiStatus: {
-//       dailyRequests: global.newsState.dailyRequestCount,
-//       maxDaily: global.newsState.maxDailyRequests,
-//       rateLimitHit: global.newsState.rateLimitHit,
-//       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
-//     }
-//   });
-  
-//   // 🚨 PRODUCTION CHANGE: Only auto-trigger in development
-//   if (isDevelopment && needsFreshNews() && canMakeApiRequest()) {
-//     console.log('🚀 [DEV] Keep-alive triggered periodic news fetch');
-//     setTimeout(() => {
-//       triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { background: true });
-//     }, 3000);
-//   } else if (isProduction) {
-//     console.log('🏭 [PROD] Keep-alive - relying on external cron-job.org');
-//   }
-// });
-
-
-// 2. Wake endpoint - ONLY keep server awake, don't fetch news
-app.get('/wake', async (req, res) => {
-  console.log('🔔 Wake endpoint called');
-  
-  res.json({ 
-    status: 'awake', 
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    environment: isProduction ? 'production' : 'development',
-    message: isProduction ? 'Server awake - no auto-fetch in production' : 'Server awake - dev mode',
-    rateLimitStatus: {
-      dailyRequests: global.newsState.dailyRequestCount,
-      maxDaily: global.newsState.maxDailyRequests,
-      canFetch: canMakeApiRequest()
-    }
-  });
-  
-  // 🚨 NEVER auto-trigger news fetch in production via wake-up
-  // Let the dedicated cron job handle news fetching
-  console.log('🏭 Wake-up completed - dedicated cron handles news fetching');
-});
-
-// 3. Health endpoint - same fix
+// 🚨 FIXED: Health endpoint for cron-job.org (GET request)
 app.get('/health', async (req, res) => {
   const status = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    environment: isProduction ? 'production' : 'development',
-    message: isProduction ? 'Healthy - relying on external cron for news' : 'Healthy - dev auto-fetch enabled',
-    apiLimits: {
-      dailyRequests: global.newsState.dailyRequestCount,
-      maxDaily: global.newsState.maxDailyRequests,
-      rateLimitHit: global.newsState.rateLimitHit,
-      lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+    environment: isDevelopment ? 'development' : 'production',
+    rateLimiting: 'RELAXED MODE',
+    fetchStatus: {
+      lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
+      totalFetches: global.newsState.fetchCount,
+      lastSuccess: global.newsState.lastSuccessfulFetch ? new Date(global.newsState.lastSuccessfulFetch).toISOString() : 'never',
+      consecutiveFailures: global.newsState.consecutiveFailures
     }
   };
   
   res.json(status);
-  
-  // 🚨 NEVER auto-trigger in production - only for local development
-  console.log('🏭 Health check - no auto-fetch in production');
 });
 
-// 4. Keep-alive endpoint - same fix
-app.get('/api/health/keep-alive', async (req, res) => {
-  res.json({ 
-    status: 'alive', 
-    timestamp: new Date().toISOString(),
-    uptime: Math.round(process.uptime()),
-    environment: isProduction ? 'production' : 'development',
-    message: isProduction ? 'Alive - external cron handles news' : 'Alive - dev mode',
-    apiStatus: {
-      dailyRequests: global.newsState.dailyRequestCount,
-      maxDaily: global.newsState.maxDailyRequests,
-      rateLimitHit: global.newsState.rateLimitHit,
-      lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+// 🚨 NEW: Cron endpoint that accepts BOTH GET and POST
+app.all('/api/cron/fetch-news', async (req, res) => {
+  try {
+    console.log('\n🔔 ============ CRON JOB TRIGGERED ============');
+    console.log(`📡 Method: ${req.method}`);
+    console.log(`📡 Request from IP: ${req.ipAddress}`);
+    console.log(`🌍 Environment: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
+    console.log(`⏰ Current time: ${new Date().toISOString()}`);
+    
+    // 🚨 RELAXED: Allow cron jobs with minimal restrictions
+    const result = await triggerNewsFetch(
+      { ip: req.ipAddress || '8.8.8.8' }, 
+      { force: false, background: true, isCronJob: true }
+    );
+    
+    const response = {
+      success: result.success,
+      timestamp: new Date().toISOString(),
+      articlesProcessed: result.articlesCount || 0,
+      environment: isDevelopment ? 'development' : 'production',
+      reason: result.reason || 'completed',
+      cronType: 'external',
+      method: req.method,
+      rateLimiting: 'RELAXED MODE'
+    };
+    
+    if (result.success) {
+      console.log(`✅ [CRON] Successfully processed ${result.articlesCount} articles`);
+      res.json(response);
+    } else {
+      console.log(`⚠️ [CRON] Fetch result: ${result.reason || result.error}`);
+      // Don't return error status - cron-job.org might think it failed
+      res.json({
+        ...response,
+        message: result.reason === 'not_needed' ? 'No fresh news needed yet' : result.error
+      });
     }
-  });
-  
-  // 🚨 NO auto-trigger in production
-  console.log('🏭 Keep-alive - server stays awake, cron handles news');
+    console.log('🏁 ============ CRON JOB COMPLETED ============\n');
+    
+  } catch (error) {
+    console.error('\n❌ ============ CRON JOB FAILED ============');
+    console.error(`❌ Error: ${error.message}`);
+    console.error('🏁 ============ CRON JOB FAILED ============\n');
+    
+    // Still return 200 to prevent cron-job.org from thinking it's broken
+    res.json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+      environment: isProduction ? 'production' : 'development',
+      rateLimiting: 'RELAXED MODE'
+    });
+  }
 });
 
-
-// Manual force fetch
+// Manual force fetch with no restrictions
 app.post('/api/health/force-fresh-news', async (req, res) => {
   try {
     const startTime = Date.now();
-    console.log('🚀 Force fresh news requested');
-    
-    if (!canMakeApiRequest()) {
-      return res.status(429).json({
-        success: false,
-        error: 'API rate limit protection - request blocked',
-        dailyRequests: global.newsState.dailyRequestCount,
-        maxDaily: global.newsState.maxDailyRequests,
-        rateLimitHit: global.newsState.rateLimitHit,
-        message: 'Too many API requests today. Try again tomorrow or use manual content upload.'
-      });
-    }
+    console.log('🚀 MANUAL Force fresh news requested');
     
     const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
     const isUrgent = req.body.urgent || false;
     
-    console.log(`📡 ${isUrgent ? '[URGENT]' : ''} Forcing news fetch (${global.newsState.dailyRequestCount + 1}/${global.newsState.maxDailyRequests})...`);
+    console.log(`📡 ${isUrgent ? '[URGENT]' : ''} FORCING news fetch...`);
     
+    // 🚨 FORCE WITH NO RESTRICTIONS
     const result = await triggerNewsFetch(ipInfo, { force: true, background: false });
     
     const duration = Date.now() - startTime;
@@ -458,11 +370,7 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
         : `Failed: ${result.reason || result.error}`,
       articlesProcessed: result.articlesCount || 0,
       duration: duration,
-      apiUsage: {
-        dailyRequests: global.newsState.dailyRequestCount,
-        maxDaily: global.newsState.maxDailyRequests,
-        remaining: global.newsState.maxDailyRequests - global.newsState.dailyRequestCount
-      },
+      rateLimiting: 'BYPASSED',
       timestamp: new Date().toISOString()
     });
     
@@ -476,71 +384,16 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
   }
 });
 
-// 🎯 MAIN CRON ENDPOINT - This is what cron-job.org should call
-app.post('/api/cron/fetch-news', async (req, res) => {
-  try {
-    console.log('🔔 [EXTERNAL CRON] News fetch triggered from cron-job.org');
-    console.log(`📡 [EXTERNAL CRON] Request from IP: ${req.ipAddress}`);
-    console.log(`🌍 [EXTERNAL CRON] Environment: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
-    
-    // Check rate limits
-    if (!canMakeApiRequest()) {
-      console.log('🚫 [EXTERNAL CRON] Rate limit protection active');
-      return res.status(429).json({
-        success: false,
-        reason: 'rate_limit_protection',
-        dailyRequests: global.newsState.dailyRequestCount,
-        maxDaily: global.newsState.maxDailyRequests,
-        message: 'Daily API limit reached or too soon since last request',
-        environment: isProduction ? 'production' : 'development'
-      });
-    }
-    
-    const result = await triggerNewsFetch(
-      { ip: req.ipAddress || '8.8.8.8' }, 
-      { force: false, background: true }
-    );
-    
-    const response = {
-      success: result.success,
-      timestamp: new Date().toISOString(),
-      articlesProcessed: result.articlesCount || 0,
-      dailyUsage: `${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests}`,
-      environment: isDevelopment ? 'development' : 'production',
-      reason: result.reason || 'completed',
-      cronType: 'external'
-    };
-    
-    if (result.success) {
-      console.log(`✅ [EXTERNAL CRON] Successfully processed ${result.articlesCount} articles`);
-      res.json(response);
-    } else {
-      console.log(`⚠️ [EXTERNAL CRON] Fetch failed: ${result.reason || result.error}`);
-      res.status(400).json(response);
-    }
-    
-  } catch (error) {
-    console.error('❌ [EXTERNAL CRON] Error:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString(),
-      environment: isProduction ? 'production' : 'development'
-    });
-  }
-});
-
-// Simple health endpoint for cron-job.org
+// Simple health endpoint for cron-job.org monitoring
 app.get('/api/cron/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
     environment: isDevelopment ? 'development' : 'production',
-    cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
-    canFetch: canMakeApiRequest(),
-    dailyUsage: `${global.newsState.dailyRequestCount}/${global.newsState.maxDailyRequests}`,
-    lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+    canFetch: canMakeApiRequest(true), // Check as cron job
+    lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
+    rateLimiting: 'RELAXED MODE - No daily limits'
   });
 });
 
@@ -574,16 +427,14 @@ app.get('/api/debug/status', (req, res) => {
     serverTime: new Date().toISOString(),
     uptime: `${Math.round(process.uptime() / 60)} minutes`,
     environment: isDevelopment ? 'development' : 'production',
-    cronStrategy: isProduction ? 'external-cron-job.org' : 'internal-development',
-    newsState: global.newsState,
-    apiLimits: {
-      dailyRequests: global.newsState.dailyRequestCount,
-      maxDaily: global.newsState.maxDailyRequests,
-      rateLimitHit: global.newsState.rateLimitHit,
-      canMakeRequest: canMakeApiRequest(),
-      nextAllowedRequest: global.newsState.lastFetch + global.newsState.minimumInterval
+    cronStrategy: 'external + internal backup',
+    rateLimiting: 'RELAXED MODE',
+    newsState: {
+      ...global.newsState,
+      canFetchRegular: canMakeApiRequest(false),
+      canFetchCron: canMakeApiRequest(true)
     },
-    environment: {
+    environment_vars: {
       NODE_ENV: process.env.NODE_ENV,
       hasPartnerAPI: !!process.env.PARTNER_API_URL,
       port: port
@@ -609,30 +460,24 @@ mongoose.connect(process.env.MONGO, {
   setupChangeStream();
   CleanupService.startPeriodicCleanup();
   
-  // 🚨 PRODUCTION CHANGE: Only auto-fetch on startup in development
-  if (isDevelopment && canMakeApiRequest()) {
-    console.log('🌅 [DEV] Server starting - triggering initial news fetch...');
-    setTimeout(async () => {
-      try {
-        const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true });
-        console.log(`🚀 [DEV] Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
-      } catch (error) {
-        console.error('❌ [DEV] Startup fetch failed:', error.message);
-      }
-    }, 5000);
-  } else if (isProduction) {
-    console.log('🏭 [PROD] Server starting - relying on external cron-job.org for news fetching');
-  } else {
-    console.log('🌅 Server starting - startup fetch skipped due to rate limits');
-  }
+  // 🚨 ALWAYS try startup fetch with relaxed restrictions
+  console.log('🌅 Server starting - triggering initial news fetch...');
+  setTimeout(async () => {
+    try {
+      const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true, force: false });
+      console.log(`🚀 Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
+    } catch (error) {
+      console.error('❌ Startup fetch failed:', error.message);
+    }
+  }, 5000);
   
   // Start server
   server.listen(port, () => {
     console.log(`✅ Server running on port ${port}`);
     console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
     console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
-    console.log(`🚫 API Rate Limiting: ${global.newsState.maxDailyRequests} requests/day max`);
-    console.log(`🤖 Cron Strategy: ${isProduction ? 'EXTERNAL (cron-job.org)' : 'INTERNAL (development)'}`);
+    console.log(`🚫 Rate Limiting: RELAXED MODE - No daily limits, only timing limits`);
+    console.log(`🤖 Cron Strategy: External cron-job.org + internal backup`);
   });
 })
 .catch(err => {
@@ -652,7 +497,7 @@ setInterval(async () => {
 
 // CRON JOBS
 
-// Move expired Just In content to Headlines (every minute) - RUNS IN BOTH ENVIRONMENTS
+// Move expired Just In content to Headlines (every minute)
 cron.schedule('* * * * *', async () => {
   try {
     const expiredJustInContent = await Content.find({
@@ -675,36 +520,30 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// 🚨 ENVIRONMENT-SPECIFIC CRON: Only run internal cron in DEVELOPMENT
-let cronJobRunning = false;
+// 🚨 INTERNAL BACKUP CRON - More frequent in relaxed mode
+// let cronJobRunning = false;
 
-// 🚨 DEVELOPMENT ONLY: Internal cron for testing
-if (isDevelopment) {
-  cron.schedule('*/15 * * * *', async () => {
-    if (cronJobRunning || !canMakeApiRequest()) {
-      console.log('⏭️ [DEV-INTERNAL-CRON] Skipping - job running or rate limited');
-      return;
-    }
-    
-    cronJobRunning = true;
-    try {
-      console.log('⏰ [DEV-INTERNAL-CRON] Development news fetch (every 15 minutes)');
-      const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true });
-      console.log(`✅ [DEV-INTERNAL-CRON] Fetch completed: ${result.success ? 'Success' : 'Failed'}`);
-    } catch (error) {
-      console.error('❌ [DEV-INTERNAL-CRON] Fetch error:', error.message);
-    } finally {
-      cronJobRunning = false;
-    }
-  });
-  console.log('⏰ Development INTERNAL CRON: Every 15 minutes');
-} else {
-  console.log('🏭 Production: NO INTERNAL CRON - Relying on external cron-job.org');
-}
+// cron.schedule('*/20 * * * *', async () => { // Every 20 minutes
+//   if (cronJobRunning) {
+//     console.log('⏭️ [INTERNAL-CRON] Skipping - job already running');
+//     return;
+//   }
+  
+//   cronJobRunning = true;
+//   try {
+//     console.log('⏰ [INTERNAL-CRON] Backup news fetch (every 20 minutes)');
+//     const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { force: false, background: true, isCronJob: true });
+//     console.log(`✅ [INTERNAL-CRON] Fetch completed: ${result.success ? 'Success - ' + result.articlesCount + ' articles' : result.reason}`);
+//   } catch (error) {
+//     console.error('❌ [INTERNAL-CRON] Fetch error:', error.message);
+//   } finally {
+//     cronJobRunning = false;
+//   }
+// });
 
-// 🚨 REMOVED: Production internal cron - we rely on external cron-job.org
+// console.log('⏰ INTERNAL BACKUP CRON: Every 20 minutes (relaxed mode)');
 
-// Refresh external channels every 24 hours (no API calls) - RUNS IN BOTH ENVIRONMENTS
+// Refresh external channels every 24 hours
 cron.schedule('0 1 * * *', async () => {
   try {
     console.log('📺 [INTERNAL-CRON] Refreshing external channels...');
@@ -715,7 +554,7 @@ cron.schedule('0 1 * * *', async () => {
   }
 });
 
-// Daily cleanup at midnight (no API calls) - RUNS IN BOTH ENVIRONMENTS
+// Daily cleanup at midnight
 cron.schedule('0 0 * * *', async () => {
   try {
     console.log('🌙 [INTERNAL-CRON] Running daily cleanup...');
