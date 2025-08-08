@@ -1,4 +1,4 @@
-// Enhanced server.js with FIXED graceful shutdown and free hosting optimizations
+// Enhanced server.js with intelligent rate limit handling
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -57,7 +57,7 @@ if (!process.env.PARTNER_API_URL) {
 // Initialize Firebase
 await initializeApp();
 
-// 1. UPDATE: Remove minimumInterval from global newsState
+// Enhanced global news state with rate limiting awareness
 global.newsState = {
   lastFetch: 0,
   isFetching: false,
@@ -65,40 +65,99 @@ global.newsState = {
   lastSuccessfulFetch: null,
   consecutiveFailures: 0,
   activeFetchPromise: null,
-  // ❌ REMOVE THIS LINE: minimumInterval: 10 * 60 * 1000,
   lastFetchSuccess: false,
-  cronJobsAllowed: true
+  cronJobsAllowed: true,
+  rateLimitDetected: false,
+  rateLimitUntil: null,
+  lastRateLimitTime: null
 };
 
-// 2. UPDATE: Simplify canMakeApiRequest function
+// Enhanced rate limit aware checking
 const canMakeApiRequest = (isCronJob = false) => {
-  // Only check if currently fetching - NO TIME RESTRICTIONS
+  const now = Date.now();
+  
+  // Check if currently fetching
   if (global.newsState.isFetching) {
     console.log('⏳ Still fetching - request will wait');
     return false;
   }
   
-  // Always allow requests if not currently fetching
+  // Check rate limit status
+  if (global.newsState.rateLimitDetected && global.newsState.rateLimitUntil) {
+    if (now < global.newsState.rateLimitUntil) {
+      const waitMinutes = Math.ceil((global.newsState.rateLimitUntil - now) / (60 * 1000));
+      console.log(`🚫 Rate limited for ${waitMinutes} more minutes`);
+      return false;
+    } else {
+      // Rate limit period has passed
+      console.log('✅ Rate limit period expired, clearing state');
+      global.newsState.rateLimitDetected = false;
+      global.newsState.rateLimitUntil = null;
+      global.newsState.consecutiveFailures = 0;
+    }
+  }
+  
+  // For cron jobs, be more conservative if we've had recent failures
+  if (isCronJob && global.newsState.consecutiveFailures >= 3) {
+    const timeSinceLastAttempt = now - global.newsState.lastFetch;
+    const minimumWait = 30 * 60 * 1000; // 30 minutes after 3 failures
+    
+    if (timeSinceLastAttempt < minimumWait) {
+      const waitMinutes = Math.ceil((minimumWait - timeSinceLastAttempt) / (60 * 1000));
+      console.log(`⏳ CRON: Waiting ${waitMinutes} minutes due to consecutive failures`);
+      return false;
+    }
+  }
+  
   return true;
 };
 
-// 3. UPDATE: Simplify needsFreshNews function
 const needsFreshNews = (isCronJob = false) => {
-  // Always return true - no time-based restrictions
-  console.log(`✅ ${isCronJob ? 'CRON' : 'Regular'}: Always allow fetching`);
-  return true;
+  const now = Date.now();
+  const timeSinceLastSuccess = global.newsState.lastSuccessfulFetch ? 
+    now - global.newsState.lastSuccessfulFetch : Infinity;
+  
+  // If we haven't had a successful fetch in over 2 hours, we definitely need fresh news
+  if (timeSinceLastSuccess > 2 * 60 * 60 * 1000) {
+    console.log(`✅ ${isCronJob ? 'CRON' : 'Regular'}: Need fresh news (last success > 2 hours ago)`);
+    return true;
+  }
+  
+  // For regular requests, be more lenient
+  if (!isCronJob) {
+    return true;
+  }
+  
+  // For cron jobs, check if we need fresh content
+  const minimumInterval = 30 * 60 * 1000; // 30 minutes minimum for cron
+  const timeSinceLastFetch = now - global.newsState.lastFetch;
+  
+  if (timeSinceLastFetch >= minimumInterval) {
+    console.log(`✅ CRON: Need fresh news (${Math.round(timeSinceLastFetch / (60 * 1000))} minutes since last fetch)`);
+    return true;
+  }
+  
+  console.log(`⏭️ CRON: Skip fetch (only ${Math.round(timeSinceLastFetch / (60 * 1000))} minutes since last)`);
+  return false;
 };
 
-// 4. UPDATE: Simplify triggerNewsFetch function
+// Enhanced fetch function with better rate limit handling
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { background = false, force = false, isCronJob = false } = options;
   
   console.log(`🚀 Fetch request: ${isCronJob ? 'CRON JOB' : 'REGULAR'}`);
   
-  // Only check if already fetching (no force mode needed anymore)
-  if (global.newsState && global.newsState.isFetching) {
-    console.log('⏳ Already fetching - skipping');
-    return { success: false, reason: 'already_fetching' };
+  // Check if we can make API request
+  if (!canMakeApiRequest(isCronJob) && !force) {
+    const reason = global.newsState.isFetching ? 'already_fetching' : 'rate_limited';
+    console.log(`⏭️ Skipping fetch: ${reason}`);
+    return { success: false, reason };
+  }
+  
+  // For cron jobs, check if we actually need fresh news
+  if (isCronJob && !needsFreshNews(true) && !force) {
+    console.log('⏭️ CRON: No fresh news needed');
+    return { success: false, reason: 'no_fresh_news_needed' };
   }
 
   try {
@@ -119,6 +178,13 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
       global.newsState.lastSuccessfulFetch = Date.now();
       global.newsState.consecutiveFailures = 0;
       global.newsState.lastFetchSuccess = true;
+      
+      // Clear rate limit state on success
+      if (global.newsState.rateLimitDetected) {
+        console.log('✅ Rate limit cleared after successful fetch');
+        global.newsState.rateLimitDetected = false;
+        global.newsState.rateLimitUntil = null;
+      }
     }
     
     console.log(`✅ API request successful: ${results.length} articles`);
@@ -126,15 +192,36 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     return { success: true, articlesCount: results.length };
     
   } catch (error) {
-    // Update failure state
+    // Enhanced error handling for rate limits
+    const isRateLimit = error.message.includes('Rate limit') || 
+                       error.message.includes('429') || 
+                       error.message.includes('Too Many Requests');
+    
     if (global.newsState) {
       global.newsState.consecutiveFailures = (global.newsState.consecutiveFailures || 0) + 1;
       global.newsState.lastFetchSuccess = false;
+      
+      // Handle rate limit specifically
+      if (isRateLimit) {
+        global.newsState.rateLimitDetected = true;
+        global.newsState.lastRateLimitTime = Date.now();
+        
+        // Set rate limit until time based on consecutive failures
+        const backoffMinutes = Math.min(30 * Math.pow(1.5, global.newsState.consecutiveFailures - 1), 120);
+        global.newsState.rateLimitUntil = Date.now() + (backoffMinutes * 60 * 1000);
+        
+        console.error(`🚫 Rate limit detected! Backing off for ${Math.ceil(backoffMinutes)} minutes`);
+      }
     }
     
     console.error(`❌ News fetch failed:`, error.message);
     
-    return { success: false, error: error.message };
+    return { 
+      success: false, 
+      error: error.message,
+      isRateLimit,
+      backoffUntil: global.newsState?.rateLimitUntil
+    };
     
   } finally {
     // Clear fetching state
@@ -145,16 +232,11 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   }
 };
 
-
-// 🆕 Cache cleanup function for free hosting
+// Memory and cache cleanup for free hosting (unchanged)
 const cleanupCaches = () => {
-  const now = Date.now();
-  const maxAge = 30 * 60 * 1000; // 30 minutes
-  
   console.log(`🧹 Cleaned up caches - Active: 0, Recent: 0`);
 };
 
-// 🆕 Memory cleanup for free hosting
 const memoryCleanup = () => {
   setInterval(() => {
     const memUsage = process.memoryUsage();
@@ -162,21 +244,19 @@ const memoryCleanup = () => {
     
     console.log(`🧠 Memory usage: ${heapUsedMB}MB`);
     
-    // Force garbage collection if available and memory is high
     if (global.gc && heapUsedMB > 100) {
       console.log('🧹 Running garbage collection...');
       global.gc();
     }
     
-    // Clear caches if memory usage is high
     if (heapUsedMB > 150) {
       console.log('🧹 Clearing caches due to high memory usage...');
       cleanupCaches();
     }
-  }, 10 * 60 * 1000); // Every 10 minutes
+  }, 10 * 60 * 1000);
 };
 
-// App configuration
+// App configuration (unchanged)
 const app = express();
 const server = http.createServer(app);
 export const io = new Server(server, {
@@ -208,7 +288,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Core middleware
+// Core middleware (unchanged)
 app.use(express.json());
 app.use(cors({
   origin: function(origin, callback) {
@@ -225,7 +305,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Socket.io setup
+// Socket.io setup (unchanged)
 io.on('connection', (socket) => {
   console.log('A user connected');
   
@@ -234,20 +314,26 @@ io.on('connection', (socket) => {
   });
 });
 
-// Basic wake-up endpoint
+// Enhanced wake-up endpoint
 app.get('/', (req, res) => {
   res.json({ 
     status: 'alive',
-    message: 'TruePace News API - RELAXED MODE',
+    message: 'TruePace News API - Enhanced Rate Limit Handling',
     timestamp: new Date().toISOString(),
     environment: isDevelopment ? 'development' : 'production',
-    cronStrategy: 'external + internal backup',
-    rateLimiting: 'RELAXED - No daily limits'
+    cronStrategy: 'intelligent rate limit aware',
+    rateLimitStatus: {
+      detected: global.newsState?.rateLimitDetected || false,
+      until: global.newsState?.rateLimitUntil ? new Date(global.newsState.rateLimitUntil).toISOString() : null
+    }
   });
 });
 
-// 🆕 Keep-alive endpoint for free hosting monitoring
+// Enhanced keep-alive endpoint
 app.get('/api/keep-alive', (req, res) => {
+  const now = Date.now();
+  const canFetch = canMakeApiRequest(false);
+  
   res.json({
     status: 'alive',
     timestamp: new Date().toISOString(),
@@ -258,36 +344,77 @@ app.get('/api/keep-alive', (req, res) => {
     },
     environment: process.env.NODE_ENV || 'development',
     dbStatus: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    lastFetch: global.newsState?.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+    lastFetch: global.newsState?.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
+    rateLimitStatus: {
+      detected: global.newsState?.rateLimitDetected || false,
+      until: global.newsState?.rateLimitUntil ? new Date(global.newsState.rateLimitUntil).toISOString() : null,
+      canMakeRequest: canFetch,
+      consecutiveFailures: global.newsState?.consecutiveFailures || 0
+    }
   });
 });
 
-// 🚨 FIXED: Health endpoint for cron-job.org (GET request)
+// Enhanced health endpoint
 app.get('/health', async (req, res) => {
+  const now = Date.now();
+  const canFetch = canMakeApiRequest(false);
+  const rateLimitWaitTime = global.newsState?.rateLimitUntil ? 
+    Math.max(0, Math.ceil((global.newsState.rateLimitUntil - now) / (60 * 1000))) : 0;
+  
   const status = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     environment: isDevelopment ? 'development' : 'production',
-    rateLimiting: 'RELAXED MODE',
     fetchStatus: {
       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
       totalFetches: global.newsState.fetchCount,
       lastSuccess: global.newsState.lastSuccessfulFetch ? new Date(global.newsState.lastSuccessfulFetch).toISOString() : 'never',
-      consecutiveFailures: global.newsState.consecutiveFailures
+      consecutiveFailures: global.newsState.consecutiveFailures,
+      canMakeRequest: canFetch
+    },
+    rateLimitStatus: {
+      detected: global.newsState.rateLimitDetected || false,
+      waitTimeMinutes: rateLimitWaitTime,
+      rateLimitUntil: global.newsState?.rateLimitUntil ? new Date(global.newsState.rateLimitUntil).toISOString() : null,
+      lastRateLimitTime: global.newsState?.lastRateLimitTime ? new Date(global.newsState.lastRateLimitTime).toISOString() : 'never'
     }
   };
   
   res.json(status);
 });
 
+// Enhanced cron endpoint with smart rate limit handling
 app.all('/api/cron/fetch-news', async (req, res) => {
   try {
     console.log('\n🔔 ============ CRON JOB TRIGGERED ============');
     console.log(`📡 Method: ${req.method}`);
     console.log(`📡 Request from IP: ${req.ipAddress}`);
     
-    // No need for force: true anymore
+    // Check rate limit status before proceeding
+    if (global.newsState?.rateLimitDetected) {
+      const now = Date.now();
+      const waitTime = Math.ceil((global.newsState.rateLimitUntil - now) / (60 * 1000));
+      
+      if (waitTime > 0) {
+        console.log(`🚫 CRON: Skipping due to rate limit (${waitTime} minutes remaining)`);
+        
+        const response = {
+          success: false,
+          timestamp: new Date().toISOString(),
+          reason: 'rate_limited',
+          waitTimeMinutes: waitTime,
+          rateLimitUntil: new Date(global.newsState.rateLimitUntil).toISOString(),
+          message: `Rate limited. Next attempt in ${waitTime} minutes.`,
+          environment: process.env.NODE_ENV || 'development',
+          method: req.method
+        };
+        
+        console.log('🏁 ============ CRON JOB SKIPPED ============\n');
+        return res.json(response);
+      }
+    }
+    
     const result = await triggerNewsFetch(
       { ip: req.ipAddress || '8.8.8.8' }, 
       { background: true, isCronJob: true }
@@ -301,8 +428,9 @@ app.all('/api/cron/fetch-news', async (req, res) => {
       reason: result.reason || 'completed',
       cronType: 'external',
       method: req.method,
-      rateLimiting: 'DISABLED - No time restrictions',
-      errorMessage: result.error || null
+      errorMessage: result.error || null,
+      isRateLimit: result.isRateLimit || false,
+      backoffUntil: result.backoffUntil ? new Date(result.backoffUntil).toISOString() : null
     };
     
     console.log('🏁 ============ CRON JOB COMPLETED ============\n');
@@ -314,21 +442,37 @@ app.all('/api/cron/fetch-news', async (req, res) => {
       success: false,
       error: error.message,
       timestamp: new Date().toISOString(),
-      rateLimiting: 'DISABLED - No time restrictions'
+      isRateLimit: error.message.includes('Rate limit') || error.message.includes('429')
     });
   }
 });
 
-// Manual force fetch with no restrictions
+// Enhanced manual force fetch
 app.post('/api/health/force-fresh-news', async (req, res) => {
   try {
     const startTime = Date.now();
     console.log('🚀 MANUAL fresh news requested');
     
     const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
+    const force = req.body.force || false;
     
-    // No need for force: true anymore
-    const result = await triggerNewsFetch(ipInfo, { background: false });
+    // Check rate limit unless forced
+    if (!force && global.newsState?.rateLimitDetected) {
+      const now = Date.now();
+      const waitTime = Math.ceil((global.newsState.rateLimitUntil - now) / (60 * 1000));
+      
+      if (waitTime > 0) {
+        return res.json({
+          success: false,
+          message: `Rate limited. Wait ${waitTime} minutes or use force=true parameter.`,
+          waitTimeMinutes: waitTime,
+          rateLimitUntil: new Date(global.newsState.rateLimitUntil).toISOString(),
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    const result = await triggerNewsFetch(ipInfo, { background: false, force });
     
     const duration = Date.now() - startTime;
     
@@ -339,7 +483,8 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
         : `Failed: ${result.reason || result.error}`,
       articlesProcessed: result.articlesCount || 0,
       duration: duration,
-      rateLimiting: 'DISABLED',
+      isRateLimit: result.isRateLimit || false,
+      backoffUntil: result.backoffUntil ? new Date(result.backoffUntil).toISOString() : null,
       timestamp: new Date().toISOString()
     });
     
@@ -348,24 +493,38 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message,
+      isRateLimit: error.message.includes('Rate limit') || error.message.includes('429'),
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// Simple health endpoint for cron-job.org monitoring
+// Enhanced cron health endpoint
 app.get('/api/cron/health', (req, res) => {
+  const now = Date.now();
+  const canFetch = canMakeApiRequest(true);
+  const rateLimitWaitTime = global.newsState?.rateLimitUntil ? 
+    Math.max(0, Math.ceil((global.newsState.rateLimitUntil - now) / (60 * 1000))) : 0;
+  
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
     environment: isDevelopment ? 'development' : 'production',
-    canFetch: !global.newsState?.isFetching, // Only check if currently fetching
+    canFetch: canFetch,
     lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
-    rateLimiting: 'DISABLED - No time restrictions'
+    rateLimitStatus: {
+      detected: global.newsState?.rateLimitDetected || false,
+      waitTimeMinutes: rateLimitWaitTime,
+      rateLimitUntil: global.newsState?.rateLimitUntil ? new Date(global.newsState.rateLimitUntil).toISOString() : null
+    },
+    recommendations: canFetch ? 
+      'Ready for cron requests' : 
+      `Wait ${rateLimitWaitTime} minutes before next cron attempt`
   });
 });
-// Mount all routes
+
+// Mount all routes (unchanged)
 app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute);
 app.use('/api/HeadlineNews/Channel', ExternalNewsRoute);
 app.use('/api/location', LocationRoute);
@@ -391,16 +550,31 @@ app.use('/api/external-news', externalNewsRouter);
 
 // Enhanced debug endpoint
 app.get('/api/debug/status', (req, res) => {
+  const now = Date.now();
+  const canFetchRegular = canMakeApiRequest(false);
+  const canFetchCron = canMakeApiRequest(true);
+  const rateLimitWaitTime = global.newsState?.rateLimitUntil ? 
+    Math.max(0, Math.ceil((global.newsState.rateLimitUntil - now) / (60 * 1000))) : 0;
+
   res.json({
     serverTime: new Date().toISOString(),
     uptime: `${Math.round(process.uptime() / 60)} minutes`,
     environment: isDevelopment ? 'development' : 'production',
-    cronStrategy: 'external + internal backup',
-    rateLimiting: 'RELAXED MODE',
+    cronStrategy: 'intelligent rate limit aware',
     newsState: {
       ...global.newsState,
-      canFetchRegular: canMakeApiRequest(false),
-      canFetchCron: canMakeApiRequest(true)
+      canFetchRegular,
+      canFetchCron,
+      rateLimitWaitTimeMinutes: rateLimitWaitTime,
+      lastFetchFormatted: global.newsState?.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
+      lastSuccessFormatted: global.newsState?.lastSuccessfulFetch ? new Date(global.newsState.lastSuccessfulFetch).toISOString() : 'never'
+    },
+    rateLimitDetails: {
+      detected: global.newsState?.rateLimitDetected || false,
+      until: global.newsState?.rateLimitUntil ? new Date(global.newsState.rateLimitUntil).toISOString() : null,
+      waitTimeMinutes: rateLimitWaitTime,
+      lastRateLimitTime: global.newsState?.lastRateLimitTime ? new Date(global.newsState.lastRateLimitTime).toISOString() : 'never',
+      consecutiveFailures: global.newsState?.consecutiveFailures || 0
     },
     environment_vars: {
       NODE_ENV: process.env.NODE_ENV,
@@ -410,24 +584,64 @@ app.get('/api/debug/status', (req, res) => {
     database: {
       connected: mongoose.connection.readyState === 1,
       host: mongoose.connection.host
+    },
+    recommendations: {
+      nextCronAttempt: canFetchCron ? 'Ready' : `Wait ${rateLimitWaitTime} minutes`,
+      manualFetch: canFetchRegular ? 'Available' : `Rate limited for ${rateLimitWaitTime} minutes`
     }
   });
 });
 
-// 🆕 OPTIMIZED database connection and startup
+// Rate limit reset endpoint for emergency situations
+app.post('/api/debug/reset-rate-limit', (req, res) => {
+  const oldState = {
+    rateLimitDetected: global.newsState?.rateLimitDetected || false,
+    rateLimitUntil: global.newsState?.rateLimitUntil || null,
+    consecutiveFailures: global.newsState?.consecutiveFailures || 0
+  };
+
+  // Reset all rate limit related states
+  if (global.newsState) {
+    global.newsState.rateLimitDetected = false;
+    global.newsState.rateLimitUntil = null;
+    global.newsState.lastRateLimitTime = null;
+    global.newsState.consecutiveFailures = 0;
+    global.newsState.isFetching = false;
+  }
+
+  console.log('🔄 Emergency rate limit reset performed');
+
+  res.json({
+    success: true,
+    message: 'Rate limit state forcefully reset',
+    oldState: {
+      rateLimitDetected: oldState.rateLimitDetected,
+      rateLimitUntil: oldState.rateLimitUntil ? new Date(oldState.rateLimitUntil).toISOString() : null,
+      consecutiveFailures: oldState.consecutiveFailures
+    },
+    newState: {
+      rateLimitDetected: false,
+      consecutiveFailures: 0,
+      resetTime: new Date().toISOString()
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Enhanced startup function
 const startOptimizedServer = async () => {
   try {
-    console.log('🚀 Starting optimized server for free hosting...');
+    console.log('🚀 Starting enhanced server with intelligent rate limiting...');
     
     // Connect to MongoDB with retry logic
     let retries = 3;
     while (retries > 0) {
       try {
         await mongoose.connect(process.env.MONGO, {
-          serverSelectionTimeoutMS: 10000, // Increased timeout
+          serverSelectionTimeoutMS: 10000,
           socketTimeoutMS: 45000,
-          maxPoolSize: 5, // Reduced for free tier
-          bufferCommands: false, // Don't buffer commands
+          maxPoolSize: 5,
+          bufferCommands: false,
         });
         console.log('✅ Connected to MongoDB');
         break;
@@ -451,17 +665,27 @@ const startOptimizedServer = async () => {
     // Start optimized monitoring
     memoryCleanup();
     
-    // 🆕 Only auto-fetch if explicitly enabled
+    // Enhanced auto-fetch with rate limit awareness
     if (shouldAutoFetch) {
-      console.log('🌅 Auto-fetch enabled - scheduling initial fetch...');
+      console.log('🌅 Auto-fetch enabled - checking rate limit status...');
+      
       setTimeout(async () => {
         try {
-          const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true, force: false });
-          console.log(`🚀 Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
+          if (canMakeApiRequest(false)) {
+            console.log('✅ No rate limits detected - proceeding with startup fetch');
+            const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true, force: false });
+            console.log(`🚀 Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
+            
+            if (result.isRateLimit) {
+              console.log('🚫 Rate limit detected during startup fetch - will respect backoff');
+            }
+          } else {
+            console.log('⏳ Rate limit detected - skipping startup fetch');
+          }
         } catch (error) {
           console.error('❌ Startup fetch failed:', error.message);
         }
-      }, 10000); // Increased delay for free hosting
+      }, 15000); // Increased delay for free hosting stability
     } else {
       console.log('⏭️ Auto-fetch disabled - no startup API call');
       console.log('💡 Use manual endpoints or set AUTO_FETCH_ON_START=true to enable');
@@ -469,21 +693,29 @@ const startOptimizedServer = async () => {
     
     // Start server
     server.listen(port, () => {
-      console.log(`✅ Server running on port ${port} (optimized for free hosting)`);
+      console.log(`✅ Server running on port ${port} (enhanced with intelligent rate limiting)`);
       console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
       console.log(`🔧 Auto-fetch: ${shouldAutoFetch ? 'ENABLED' : 'DISABLED'}`);
       console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
-      console.log(`🚫 Rate Limiting: RELAXED MODE - No daily limits, only timing limits`);
-      console.log(`🤖 Cron Strategy: External cron-job.org + internal backup`);
-      console.log(`🆓 Free Hosting Mode: Reduced resource usage, extended timeouts`);
+      console.log(`🧠 Rate Limiting: INTELLIGENT - Adaptive backoff with fallback strategies`);
+      console.log(`🤖 Cron Strategy: Smart rate-limit aware external cron`);
+      console.log(`🆓 Free Hosting Mode: Enhanced stability with rate limit detection`);
       
       if (isDevelopment) {
         console.log('🔧 Development Tips:');
         console.log('   • Use POST /api/health/force-fresh-news to manually fetch');
         console.log('   • Use GET /api/external-news/test-api to test API connection');
-        console.log('   • Use GET /api/debug/status to check current state');
-        console.log('   • Use GET /api/keep-alive for lightweight health checks');
+        console.log('   • Use GET /api/debug/status to check current state and rate limits');
+        console.log('   • Use POST /api/debug/reset-rate-limit for emergency rate limit reset');
+        console.log('   • Use GET /api/external-news/rate-limit-status for detailed rate limit info');
       }
+      
+      console.log('\n🎯 Rate Limit Management:');
+      console.log('   • Automatic detection of 429 responses');
+      console.log('   • Progressive backoff (30min → 45min → 67min → max 120min)');
+      console.log('   • Multiple IP fallback strategies');
+      console.log('   • Cron job intelligence (skips during rate limits)');
+      console.log('   • Manual override options available');
     });
     
   } catch (err) {
@@ -495,7 +727,7 @@ const startOptimizedServer = async () => {
 // Start the server
 startOptimizedServer();
 
-// 🆕 OPTIMIZED Database heartbeat for free hosting
+// Enhanced database heartbeat with connection recovery
 setInterval(async () => {
   try {
     const startTime = Date.now();
@@ -504,14 +736,12 @@ setInterval(async () => {
     
     console.log(`💓 Database heartbeat: ${duration}ms`);
     
-    // If ping takes too long, log it
     if (duration > 2000) {
       console.warn(`⚠️ Slow database response: ${duration}ms`);
     }
   } catch (error) {
     console.error('❌ Database heartbeat failed:', error.message);
     
-    // Attempt to reconnect if connection is lost
     if (mongoose.connection.readyState === 0) {
       console.log('🔄 Attempting database reconnection...');
       try {
@@ -522,9 +752,9 @@ setInterval(async () => {
       }
     }
   }
-}, 5 * 60 * 1000); // Every 5 minutes
+}, 5 * 60 * 1000);
 
-// CRON JOBS
+// CRON JOBS - Enhanced with rate limit awareness
 
 // Move expired Just In content to Headlines (every minute)
 cron.schedule('* * * * *', async () => {
@@ -549,7 +779,7 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// Refresh external channels every 24 hours
+// Refresh external channels every 24 hours (unchanged)
 cron.schedule('0 1 * * *', async () => {
   try {
     console.log('📺 [INTERNAL-CRON] Refreshing external channels...');
@@ -560,7 +790,7 @@ cron.schedule('0 1 * * *', async () => {
   }
 });
 
-// Daily cleanup at midnight
+// Daily cleanup at midnight (unchanged)
 cron.schedule('0 0 * * *', async () => {
   try {
     console.log('🌙 [INTERNAL-CRON] Running daily cleanup...');
@@ -590,18 +820,17 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
 
-// Error handling middleware
+// Error handling middleware (unchanged)
 app.use((err, req, res, next) => {
   console.error('❌ Unhandled error:', err.stack);
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-// 🚨 FIXED: Graceful shutdown handlers
+// Enhanced graceful shutdown handlers
 process.on('SIGTERM', async () => {
   console.log('📛 SIGTERM received, shutting down gracefully...');
   
   try {
-    // Close HTTP server first
     await new Promise((resolve) => {
       server.close(() => {
         console.log('🛑 HTTP server closed');
@@ -609,7 +838,6 @@ process.on('SIGTERM', async () => {
       });
     });
     
-    // Close MongoDB connection without callback (FIXED)
     await mongoose.connection.close();
     console.log('🗄️ MongoDB connection closed');
     
@@ -622,7 +850,6 @@ process.on('SIGTERM', async () => {
   }
 });
 
-// Also add SIGINT handler for Ctrl+C during development
 process.on('SIGINT', async () => {
   console.log('📛 SIGINT received, shutting down gracefully...');
   
