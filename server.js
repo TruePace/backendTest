@@ -658,7 +658,7 @@
 //   process.exit(1);
 // });
 
-// Enhanced server.js with proper cold start handling for Render.com
+// Enhanced server.js with proper development/production handling
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -697,9 +697,19 @@ const __dirname = path.dirname(__filename);
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-// Validate critical environment variables
-if (!process.env.PARTNER_API_URL) {
-  console.error('❌ CRITICAL: PARTNER_API_URL is not set in environment variables!');
+// IMPORTANT: Check environment mode
+const isDevelopment = process.env.NODE_ENV === 'development';
+const isProduction = process.env.NODE_ENV === 'production';
+const autoFetchOnStart = process.env.AUTO_FETCH_ON_START === 'true';
+
+console.log(`🌍 Environment: ${process.env.NODE_ENV || 'not set'}`);
+console.log(`🔧 Development mode: ${isDevelopment}`);
+console.log(`🚀 Production mode: ${isProduction}`);
+console.log(`📰 Auto fetch on start: ${autoFetchOnStart}`);
+
+// Validate critical environment variables for production
+if (isProduction && !process.env.PARTNER_API_URL) {
+  console.error('❌ CRITICAL: PARTNER_API_URL is not set in production environment variables!');
   console.error('Please ensure PARTNER_API_URL is set in Render.com environment settings');
 }
 
@@ -733,11 +743,17 @@ const needsFreshNews = () => {
   return false;
 };
 
-// Enhanced news fetching with retry and error handling
+// Enhanced news fetching with development/production mode awareness
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { background = false, force = false } = options;
   
-  // For cold starts or force requests, always proceed
+  // IMPORTANT: Skip auto-fetch in development unless explicitly forced or configured
+  if (isDevelopment && !force && !autoFetchOnStart) {
+    console.log('🔧 Development mode: Skipping auto news fetch (use manual trigger or set AUTO_FETCH_ON_START=true)');
+    return { success: false, reason: 'development_mode_skip' };
+  }
+  
+  // For production cold starts or force requests, always proceed
   const isRecentStartup = process.uptime() < 300; // Less than 5 minutes
   
   if (!force && !isRecentStartup && global.newsState.isFetching) {
@@ -745,8 +761,8 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     return { success: false, reason: 'already_fetching' };
   }
   
-  // For recent startups, always fetch regardless of timing
-  if (!force && !isRecentStartup && !needsFreshNews()) {
+  // For recent startups in production, always fetch regardless of timing
+  if (!force && !isRecentStartup && !needsFreshNews() && isProduction) {
     console.log('⏰ Fresh news not needed yet');
     return { success: false, reason: 'not_needed' };
   }
@@ -757,7 +773,8 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     global.newsState.fetchCount++;
     
     const startupIndicator = isRecentStartup ? ' (STARTUP)' : '';
-    console.log(`🚀 Starting news fetch #${global.newsState.fetchCount}${startupIndicator} (${background ? 'background' : 'foreground'})...`);
+    const envIndicator = isDevelopment ? ' (DEV)' : ' (PROD)';
+    console.log(`🚀 Starting news fetch #${global.newsState.fetchCount}${startupIndicator}${envIndicator} (${background ? 'background' : 'foreground'})...`);
     
     const results = await fetchExternalNewsServer(ipInfo);
     
@@ -849,11 +866,12 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'alive',
     message: 'TruePace News API',
+    environment: process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString()
   });
 });
 
-// Health check endpoint that triggers news fetch
+// Health check endpoint that triggers news fetch (production only)
 app.get('/health', async (req, res) => {
   const needsFresh = needsFreshNews();
   
@@ -861,6 +879,7 @@ app.get('/health', async (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
     newsState: {
       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
       isFetching: global.newsState.isFetching,
@@ -872,47 +891,53 @@ app.get('/health', async (req, res) => {
   // Send response immediately
   res.json(status);
   
-  // ALWAYS trigger fetch on health check if server just woke up
-  if (process.uptime() < 300) { // If server has been up for less than 5 minutes
-    console.log('🔄 Health check detected recent startup - forcing news fetch');
-    triggerNewsFetch({ ip: req.ipAddress }, { force: true, background: true });
-  } else if (needsFresh) {
-    console.log('📰 Health check triggering background news fetch...');
-    triggerNewsFetch({ ip: req.ipAddress }, { background: true });
+  // ONLY trigger fetch on health check in production or if configured to do so
+  if (isProduction || autoFetchOnStart) {
+    if (process.uptime() < 300) { // If server has been up for less than 5 minutes
+      console.log('🔄 Health check detected recent startup - forcing news fetch');
+      triggerNewsFetch({ ip: req.ipAddress }, { force: true, background: true });
+    } else if (needsFresh) {
+      console.log('📰 Health check triggering background news fetch...');
+      triggerNewsFetch({ ip: req.ipAddress }, { background: true });
+    }
   }
 });
 
-// CRITICAL: Wake-up endpoint specifically for Render cold starts
+// CRITICAL: Wake-up endpoint specifically for production deployments
 app.get('/wake', async (req, res) => {
   const startTime = Date.now();
-  console.log('🔔 Wake endpoint called - starting aggressive initialization...');
+  console.log('🔔 Wake endpoint called - starting initialization...');
   
   // Immediately respond to prevent timeout
   res.json({ 
     status: 'waking up', 
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    action: 'triggering_aggressive_news_fetch'
+    environment: process.env.NODE_ENV || 'development',
+    action: isProduction || autoFetchOnStart ? 'triggering_news_fetch' : 'skipping_development'
   });
   
-  // Start aggressive background initialization
-  setTimeout(async () => {
-    try {
-      console.log('🚀 Background: Starting news fetch after wake...');
-      
-      // Force immediate news fetch regardless of timing
-      const result = await triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { 
-        force: true, 
-        background: false // Make it foreground for wake calls
-      });
-      
-      const duration = Date.now() - startTime;
-      console.log(`⏱️ Wake sequence completed in ${duration}ms:`, result);
-      
-    } catch (error) {
-      console.error('❌ Background wake sequence failed:', error);
-    }
-  }, 100); // Start immediately
+  // Only start aggressive initialization in production or if configured
+  if (isProduction || autoFetchOnStart) {
+    setTimeout(async () => {
+      try {
+        console.log('🚀 Background: Starting news fetch after wake...');
+        
+        const result = await triggerNewsFetch({ ip: req.ipAddress || '8.8.8.8' }, { 
+          force: true, 
+          background: false
+        });
+        
+        const duration = Date.now() - startTime;
+        console.log(`⏱️ Wake sequence completed in ${duration}ms:`, result);
+        
+      } catch (error) {
+        console.error('❌ Background wake sequence failed:', error);
+      }
+    }, 100);
+  } else {
+    console.log('🔧 Development mode: Skipping wake sequence news fetch');
+  }
 });
 
 // Enhanced keep-alive endpoint
@@ -924,31 +949,32 @@ app.get('/api/health/keep-alive', async (req, res) => {
     status: 'alive', 
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
+    environment: process.env.NODE_ENV || 'development',
     lastNewsFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
     needsFreshNews: needsFresh,
     isFetching: global.newsState.isFetching,
     fetchCount: global.newsState.fetchCount
   });
   
-  // Trigger background fetch if needed
-  if (needsFresh) {
+  // Trigger background fetch if needed (production only or if configured)
+  if ((isProduction || autoFetchOnStart) && needsFresh) {
     console.log('📰 Keep-alive triggering background news fetch...');
     triggerNewsFetch({ ip: req.ipAddress }, { background: true });
   }
 });
 
-// Force fresh news endpoint
+// MANUAL: Force fresh news endpoint - always works regardless of environment
 app.post('/api/health/force-fresh-news', async (req, res) => {
   try {
     const startTime = Date.now();
-    console.log('🚀 Force fresh news requested');
+    console.log('🚀 Force fresh news requested (manual override)');
     
     const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
     const isUrgent = req.body.urgent || false;
     
-    console.log(`📡 ${isUrgent ? '[URGENT]' : ''} Forcing news fetch...`);
+    console.log(`📡 ${isUrgent ? '[URGENT]' : ''} Forcing news fetch (manual)...`);
     
-    // Always force fetch when explicitly requested
+    // Always force fetch when explicitly requested (works in both dev and prod)
     const result = await triggerNewsFetch(ipInfo, { force: true, background: false });
     
     const duration = Date.now() - startTime;
@@ -961,6 +987,7 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
       articlesProcessed: result.articlesCount || 0,
       duration: duration,
       urgent: isUrgent,
+      environment: process.env.NODE_ENV || 'development',
       timestamp: new Date().toISOString()
     });
     
@@ -974,20 +1001,22 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
   }
 });
 
-// CRITICAL: Middleware that ensures fresh news on important endpoints
+// CRITICAL: Middleware that ensures fresh news on important endpoints (production only)
 const ensureFreshNewsMiddleware = (req, res, next) => {
-  // Only trigger on GET requests to avoid duplicate fetches
-  if (req.method === 'GET' && needsFreshNews()) {
+  // Only trigger on GET requests and only in production or if configured
+  if (req.method === 'GET' && (isProduction || autoFetchOnStart) && needsFreshNews()) {
     console.log('🔄 Content request triggering background news fetch...');
     triggerNewsFetch({ ip: req.ipAddress }, { background: true });
   }
   next();
 };
 
-// Apply fresh news middleware to content routes
-app.use('/api/HeadlineNews/Channel', ensureFreshNewsMiddleware);
-app.use('/api/HeadlineNews/GetJustIn', ensureFreshNewsMiddleware);
-app.use('/api/HeadlineNews/Content', ensureFreshNewsMiddleware);
+// Apply fresh news middleware to content routes (only in production)
+if (isProduction || autoFetchOnStart) {
+  app.use('/api/HeadlineNews/Channel', ensureFreshNewsMiddleware);
+  app.use('/api/HeadlineNews/GetJustIn', ensureFreshNewsMiddleware);
+  app.use('/api/HeadlineNews/Content', ensureFreshNewsMiddleware);
+}
 
 // Mount all routes
 app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute);
@@ -1018,8 +1047,12 @@ app.get('/api/debug/status', (req, res) => {
   res.json({
     serverTime: new Date().toISOString(),
     uptime: `${Math.round(process.uptime() / 60)} minutes`,
+    environment: process.env.NODE_ENV || 'development',
+    isDevelopment: isDevelopment,
+    isProduction: isProduction,
+    autoFetchOnStart: autoFetchOnStart,
     newsState: global.newsState,
-    environment: {
+    configuration: {
       NODE_ENV: process.env.NODE_ENV,
       hasPartnerAPI: !!process.env.PARTNER_API_URL,
       port: port
@@ -1043,21 +1076,36 @@ mongoose.connect(process.env.MONGO, {
   // Start cleanup service
   CleanupService.startPeriodicCleanup();
   
-  // CRITICAL: Always fetch news immediately on startup - regardless of last fetch time
-  console.log('🌅 Server starting - fetching initial news with force...');
-  await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true, background: false });
+  // CRITICAL: Only fetch news on startup in production or if explicitly configured
+  if (isProduction || autoFetchOnStart) {
+    console.log('🌅 Server starting - fetching initial news...');
+    await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true, background: false });
+    
+    // Additional post-startup fetch for production
+    setTimeout(async () => {
+      console.log('🔄 Post-startup news fetch...');
+      await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+    }, 5000);
+  } else {
+    console.log('🔧 Development mode: Skipping startup news fetch (use manual endpoints)');
+  }
   
   // Start server
   server.listen(port, () => {
     console.log(`✅ Server running on port ${port}`);
-    console.log('🚀 Cold start handling active');
-    console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔧 Development mode: ${isDevelopment}`);
+    console.log(`🚀 Production mode: ${isProduction}`);
+    console.log(`📰 Auto fetch enabled: ${isProduction || autoFetchOnStart}`);
+    console.log(`📡 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
     
-    // ADDITIONAL: Set up immediate fetch after server is ready
-    setTimeout(async () => {
-      console.log('🔄 Post-startup news fetch...');
-      await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
-    }, 5000); // 5 seconds after server starts
+    if (isDevelopment) {
+      console.log('\n🔧 DEVELOPMENT MODE ACTIVE:');
+      console.log('   - Auto news fetching is DISABLED');
+      console.log('   - Use POST /api/health/force-fresh-news to manually fetch');
+      console.log('   - Use POST /api/external-news/fetch-external-news for testing');
+      console.log('   - Set AUTO_FETCH_ON_START=true in .env to enable auto-fetch in dev\n');
+    }
   });
 })
 .catch(err => {
@@ -1100,20 +1148,26 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// Fetch external news every 15 minutes
+// Fetch external news every 30 minutes (only in production or if configured)
 cron.schedule('*/30 * * * *', async () => {
-  console.log('⏰ [CRON] 30-minute news fetch triggered');
-  await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+  if (isProduction || autoFetchOnStart) {
+    console.log('⏰ [CRON] 30-minute news fetch triggered');
+    await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
+  } else {
+    console.log('⏰ [CRON] Skipping 30-minute fetch (development mode)');
+  }
 });
 
-// Refresh external channels every 6 hours
+// Refresh external channels every 6 hours (only in production or if configured)
 cron.schedule('0 */6 * * *', async () => {
-  try {
-    console.log('📺 [CRON] Refreshing external channels...');
-    const success = await refreshExternalChannelsServer();
-    console.log(success ? '✅ Channels refreshed' : '❌ Channel refresh failed');
-  } catch (error) {
-    console.error('❌ Channel refresh error:', error);
+  if (isProduction || autoFetchOnStart) {
+    try {
+      console.log('📺 [CRON] Refreshing external channels...');
+      const success = await refreshExternalChannelsServer();
+      console.log(success ? '✅ Channels refreshed' : '❌ Channel refresh failed');
+    } catch (error) {
+      console.error('❌ Channel refresh error:', error);
+    }
   }
 });
 
