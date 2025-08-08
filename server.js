@@ -722,22 +722,25 @@ global.newsState = {
   isFetching: false,
   fetchCount: 0,
   lastSuccessfulFetch: null,
-  consecutiveFailures: 0
+  consecutiveFailures: 0,
+  rateLimited: false,        // ADD THIS
+  rateLimitedUntil: 0       // ADD THIS
 };
 
 // Helper function to check if fresh news is needed
 const needsFreshNews = () => {
   const now = Date.now();
+  
+  // Check if we're still rate limited
+  if (global.newsState.rateLimited && now < global.newsState.rateLimitedUntil) {
+    return false;
+  }
+  
   const timeSinceLastFetch = now - global.newsState.lastFetch;
-  const fetchInterval = 15 * 60 * 1000; // 15 minutes
+  const fetchInterval = 2 * 60 * 60 * 1000; // CHANGED: 2 hours instead of 15 minutes
   
-  // Always fetch if never fetched before
   if (global.newsState.lastFetch === 0) return true;
-  
-  // Fetch if interval has passed
   if (timeSinceLastFetch > fetchInterval) return true;
-  
-  // Force fetch if too many consecutive failures
   if (global.newsState.consecutiveFailures >= 3) return true;
   
   return false;
@@ -1149,7 +1152,7 @@ cron.schedule('* * * * *', async () => {
 });
 
 // Fetch external news every 30 minutes (only in production or if configured)
-cron.schedule('*/30 * * * *', async () => {
+cron.schedule('0 */2 * * *', async () => {
   if (isProduction || autoFetchOnStart) {
     console.log('⏰ [CRON] 30-minute news fetch triggered');
     await triggerNewsFetch({ ip: '8.8.8.8' }, { force: true });
