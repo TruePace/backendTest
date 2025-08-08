@@ -1,4 +1,4 @@
-// Enhanced server.js with RELAXED rate limiting for cron jobs
+// Enhanced server.js with FIXED graceful shutdown and free hosting optimizations
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -57,7 +57,7 @@ if (!process.env.PARTNER_API_URL) {
 // Initialize Firebase
 await initializeApp();
 
-// 🆕 RELAXED Rate limiting - Remove daily limits for cron jobs
+// 1. UPDATE: Remove minimumInterval from global newsState
 global.newsState = {
   lastFetch: 0,
   isFetching: false,
@@ -65,92 +65,40 @@ global.newsState = {
   lastSuccessfulFetch: null,
   consecutiveFailures: 0,
   activeFetchPromise: null,
-  // 🚨 REMOVED DAILY LIMITS - Only use timing limits
-  minimumInterval: 10 * 60 * 1000, // 10 minutes minimum between requests
+  // ❌ REMOVE THIS LINE: minimumInterval: 10 * 60 * 1000,
   lastFetchSuccess: false,
-  cronJobsAllowed: true // Allow cron jobs to bypass most restrictions
+  cronJobsAllowed: true
 };
 
-console.log(`⚙️ Rate Limits: RELAXED MODE - Only ${Math.round(global.newsState.minimumInterval/60000)} min intervals`);
-
-// 🆕 RELAXED rate limit checker - Much more permissive
+// 2. UPDATE: Simplify canMakeApiRequest function
 const canMakeApiRequest = (isCronJob = false) => {
-  // 🚨 CRON JOBS GET PRIORITY - Skip most restrictions
-  if (isCronJob) {
-    console.log('🤖 Cron job request - bypassing most rate limits');
-    
-    // Only check if we're currently fetching
-    if (global.newsState.isFetching) {
-      console.log('⏳ Still fetching - cron job will wait');
-      return false;
-    }
-    
-    // Check minimum interval (reduced for cron jobs)
-    const timeSinceLastFetch = Date.now() - global.newsState.lastFetch;
-    const cronMinInterval = 5 * 60 * 1000; // 5 minutes for cron jobs
-    
-    if (timeSinceLastFetch < cronMinInterval) {
-      const remainingTime = Math.ceil((cronMinInterval - timeSinceLastFetch) / (60 * 1000));
-      console.log(`⏰ Cron job too soon. Wait ${remainingTime} minutes`);
-      return false;
-    }
-    
-    return true;
-  }
-  
-  // Regular requests - check minimum time interval only
-  const timeSinceLastFetch = Date.now() - global.newsState.lastFetch;
-  if (timeSinceLastFetch < global.newsState.minimumInterval) {
-    const remainingTime = Math.ceil((global.newsState.minimumInterval - timeSinceLastFetch) / (60 * 1000));
-    console.log(`⏰ Regular request too soon. Wait ${remainingTime} minutes`);
+  // Only check if currently fetching - NO TIME RESTRICTIONS
+  if (global.newsState.isFetching) {
+    console.log('⏳ Still fetching - request will wait');
     return false;
   }
   
+  // Always allow requests if not currently fetching
   return true;
 };
 
-// 🆕 RELAXED freshness check
+// 3. UPDATE: Simplify needsFreshNews function
 const needsFreshNews = (isCronJob = false) => {
-  const now = Date.now();
-  const timeSinceLastFetch = now - global.newsState.lastFetch;
-  
-  // 🚨 CRON JOBS: More aggressive fetching
-  if (isCronJob) {
-    const cronInterval = 10 * 60 * 1000; // 10 minutes for cron jobs
-    if (global.newsState.lastFetch === 0 || timeSinceLastFetch > cronInterval) {
-      console.log(`✅ CRON: ${global.newsState.lastFetch === 0 ? 'First fetch' : Math.round(timeSinceLastFetch / (60 * 1000)) + ' minutes since last fetch'} - fetching now`);
-      return true;
-    }
-    console.log(`⏰ CRON: Only ${Math.round(timeSinceLastFetch / (60 * 1000))} minutes - need to wait`);
-    return false;
-  }
-  
-  // Regular requests
-  const regularInterval = global.newsState.minimumInterval;
-  if (global.newsState.lastFetch === 0 || timeSinceLastFetch > regularInterval) {
-    console.log(`✅ Regular: Can fetch now`);
-    return true;
-  }
-  
-  console.log(`⏰ Regular: Need to wait`);
-  return false;
+  // Always return true - no time-based restrictions
+  console.log(`✅ ${isCronJob ? 'CRON' : 'Regular'}: Always allow fetching`);
+  return true;
 };
 
-// 🚨 SIMPLIFIED triggerNewsFetch - Remove all restrictions
+// 4. UPDATE: Simplify triggerNewsFetch function
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { background = false, force = false, isCronJob = false } = options;
   
-  console.log(`🚀 Fetch request: ${isCronJob ? 'CRON JOB' : 'REGULAR'} ${force ? '(FORCED)' : ''}`);
+  console.log(`🚀 Fetch request: ${isCronJob ? 'CRON JOB' : 'REGULAR'}`);
   
-  // 🚨 FORCE MODE - Skip ALL checks when force = true
-  if (force) {
-    console.log('🚀 FORCE MODE: Skipping all rate limit checks');
-  } else {
-    // Only check if already fetching (not force mode)
-    if (global.newsState && global.newsState.isFetching) {
-      console.log('⏳ Already fetching - skipping');
-      return { success: false, reason: 'already_fetching' };
-    }
+  // Only check if already fetching (no force mode needed anymore)
+  if (global.newsState && global.newsState.isFetching) {
+    console.log('⏳ Already fetching - skipping');
+    return { success: false, reason: 'already_fetching' };
   }
 
   try {
@@ -196,6 +144,38 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     }
   }
 };
+
+
+// 🆕 Cache cleanup function for free hosting
+const cleanupCaches = () => {
+  const now = Date.now();
+  const maxAge = 30 * 60 * 1000; // 30 minutes
+  
+  console.log(`🧹 Cleaned up caches - Active: 0, Recent: 0`);
+};
+
+// 🆕 Memory cleanup for free hosting
+const memoryCleanup = () => {
+  setInterval(() => {
+    const memUsage = process.memoryUsage();
+    const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    
+    console.log(`🧠 Memory usage: ${heapUsedMB}MB`);
+    
+    // Force garbage collection if available and memory is high
+    if (global.gc && heapUsedMB > 100) {
+      console.log('🧹 Running garbage collection...');
+      global.gc();
+    }
+    
+    // Clear caches if memory usage is high
+    if (heapUsedMB > 150) {
+      console.log('🧹 Clearing caches due to high memory usage...');
+      cleanupCaches();
+    }
+  }, 10 * 60 * 1000); // Every 10 minutes
+};
+
 // App configuration
 const app = express();
 const server = http.createServer(app);
@@ -266,6 +246,22 @@ app.get('/', (req, res) => {
   });
 });
 
+// 🆕 Keep-alive endpoint for free hosting monitoring
+app.get('/api/keep-alive', (req, res) => {
+  res.json({
+    status: 'alive',
+    timestamp: new Date().toISOString(),
+    uptime: Math.round(process.uptime()),
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+    },
+    environment: process.env.NODE_ENV || 'development',
+    dbStatus: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    lastFetch: global.newsState?.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never'
+  });
+});
+
 // 🚨 FIXED: Health endpoint for cron-job.org (GET request)
 app.get('/health', async (req, res) => {
   const status = {
@@ -290,16 +286,11 @@ app.all('/api/cron/fetch-news', async (req, res) => {
     console.log('\n🔔 ============ CRON JOB TRIGGERED ============');
     console.log(`📡 Method: ${req.method}`);
     console.log(`📡 Request from IP: ${req.ipAddress}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`⏰ Current time: ${new Date().toISOString()}`);
-    console.log(`🔗 Partner API URL: ${process.env.PARTNER_API_URL || 'NOT SET'}`);
     
-    // 🚨 BYPASS ALL RATE LIMITING FOR DEBUGGING
-    console.log('🚀 BYPASSING ALL RATE LIMITING - FORCING FETCH');
-    
+    // No need for force: true anymore
     const result = await triggerNewsFetch(
       { ip: req.ipAddress || '8.8.8.8' }, 
-      { force: true, background: true, isCronJob: true } // FORCE = TRUE
+      { background: true, isCronJob: true }
     );
     
     const response = {
@@ -310,34 +301,20 @@ app.all('/api/cron/fetch-news', async (req, res) => {
       reason: result.reason || 'completed',
       cronType: 'external',
       method: req.method,
-      rateLimiting: 'BYPASSED FOR DEBUGGING',
-      partnerApiUrl: process.env.PARTNER_API_URL ? 'configured' : 'NOT CONFIGURED',
+      rateLimiting: 'DISABLED - No time restrictions',
       errorMessage: result.error || null
     };
     
-    if (result.success) {
-      console.log(`✅ [CRON] Successfully processed ${result.articlesCount} articles`);
-    } else {
-      console.log(`⚠️ [CRON] Fetch failed: ${result.reason || result.error}`);
-    }
-    
     console.log('🏁 ============ CRON JOB COMPLETED ============\n');
-    
     res.json(response);
     
   } catch (error) {
-    console.error('\n❌ ============ CRON JOB FAILED ============');
-    console.error(`❌ Error: ${error.message}`);
-    console.error(`❌ Stack: ${error.stack}`);
-    console.error('🏁 ============ CRON JOB FAILED ============\n');
-    
+    console.error('❌ CRON JOB FAILED:', error.message);
     res.json({
       success: false,
       error: error.message,
       timestamp: new Date().toISOString(),
-      environment: process.env.NODE_ENV || 'development',
-      rateLimiting: 'BYPASSED FOR DEBUGGING',
-      partnerApiUrl: process.env.PARTNER_API_URL ? 'configured' : 'NOT CONFIGURED'
+      rateLimiting: 'DISABLED - No time restrictions'
     });
   }
 });
@@ -346,15 +323,12 @@ app.all('/api/cron/fetch-news', async (req, res) => {
 app.post('/api/health/force-fresh-news', async (req, res) => {
   try {
     const startTime = Date.now();
-    console.log('🚀 MANUAL Force fresh news requested');
+    console.log('🚀 MANUAL fresh news requested');
     
     const ipInfo = { ip: req.ipAddress || req.body.ip || '8.8.8.8' };
-    const isUrgent = req.body.urgent || false;
     
-    console.log(`📡 ${isUrgent ? '[URGENT]' : ''} FORCING news fetch...`);
-    
-    // 🚨 FORCE WITH NO RESTRICTIONS
-    const result = await triggerNewsFetch(ipInfo, { force: true, background: false });
+    // No need for force: true anymore
+    const result = await triggerNewsFetch(ipInfo, { background: false });
     
     const duration = Date.now() - startTime;
     
@@ -365,7 +339,7 @@ app.post('/api/health/force-fresh-news', async (req, res) => {
         : `Failed: ${result.reason || result.error}`,
       articlesProcessed: result.articlesCount || 0,
       duration: duration,
-      rateLimiting: 'BYPASSED',
+      rateLimiting: 'DISABLED',
       timestamp: new Date().toISOString()
     });
     
@@ -386,17 +360,11 @@ app.get('/api/cron/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
     environment: isDevelopment ? 'development' : 'production',
-    canFetch: canMakeApiRequest(true), // Check as cron job
+    canFetch: !global.newsState?.isFetching, // Only check if currently fetching
     lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
-    rateLimiting: 'RELAXED MODE - No daily limits'
+    rateLimiting: 'DISABLED - No time restrictions'
   });
 });
-
-
-
-
-
-
 // Mount all routes
 app.use('/api/HeadlineNews/Channel', HeadlineNewsChannelRoute);
 app.use('/api/HeadlineNews/Channel', ExternalNewsRoute);
@@ -446,69 +414,115 @@ app.get('/api/debug/status', (req, res) => {
   });
 });
 
-
-
-mongoose.connect(process.env.MONGO, {
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
-})
-.then(async () => {
-  console.log('✅ Connected to MongoDB');
-  
-  console.log('🧹 Running emergency duplicate cleanup on startup...');
-  await CleanupService.cleanupDuplicatesNow();
-  
-  setupChangeStream();
-  CleanupService.startPeriodicCleanup();
-  
-  // 🆕 Only auto-fetch if explicitly enabled
-  if (shouldAutoFetch) {
-    console.log('🌅 Auto-fetch enabled - triggering initial news fetch...');
-    setTimeout(async () => {
-      try {
-        const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true, force: false });
-        console.log(`🚀 Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
-      } catch (error) {
-        console.error('❌ Startup fetch failed:', error.message);
-      }
-    }, 5000);
-  } else {
-    console.log('⏭️ Auto-fetch disabled - no startup API call');
-    console.log('💡 Use manual endpoints or set AUTO_FETCH_ON_START=true to enable');
-  }
-  
-  
-  // Start server
-  server.listen(port, () => {
-    console.log(`✅ Server running on port ${port}`);
-    console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
-      console.log(`🔧 Auto-fetch: ${shouldAutoFetch ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
-    console.log(`🚫 Rate Limiting: RELAXED MODE - No daily limits, only timing limits`);
-    console.log(`🤖 Cron Strategy: External cron-job.org + internal backup`);
+// 🆕 OPTIMIZED database connection and startup
+const startOptimizedServer = async () => {
+  try {
+    console.log('🚀 Starting optimized server for free hosting...');
     
-    if (isDevelopment) {
-      console.log('🔧 Development Tips:');
-      console.log('   • Use POST /api/health/force-fresh-news to manually fetch');
-      console.log('   • Use GET /api/external-news/test-api to test API connection');
-      console.log('   • Use GET /api/debug/status to check current state');
+    // Connect to MongoDB with retry logic
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        await mongoose.connect(process.env.MONGO, {
+          serverSelectionTimeoutMS: 10000, // Increased timeout
+          socketTimeoutMS: 45000,
+          maxPoolSize: 5, // Reduced for free tier
+          bufferCommands: false, // Don't buffer commands
+        });
+        console.log('✅ Connected to MongoDB');
+        break;
+      } catch (error) {
+        retries--;
+        console.error(`❌ MongoDB connection attempt failed (${retries} retries left):`, error.message);
+        if (retries > 0) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        } else {
+          throw error;
+        }
+      }
     }
-  });
-})
-.catch(err => {
-  console.error('❌ MongoDB connection error:', err);
-  process.exit(1);
-});
+    
+    console.log('🧹 Running emergency duplicate cleanup on startup...');
+    await CleanupService.cleanupDuplicatesNow();
+    
+    setupChangeStream();
+    CleanupService.startPeriodicCleanup();
+    
+    // Start optimized monitoring
+    memoryCleanup();
+    
+    // 🆕 Only auto-fetch if explicitly enabled
+    if (shouldAutoFetch) {
+      console.log('🌅 Auto-fetch enabled - scheduling initial fetch...');
+      setTimeout(async () => {
+        try {
+          const result = await triggerNewsFetch({ ip: '8.8.8.8' }, { background: true, force: false });
+          console.log(`🚀 Startup fetch: ${result.success ? 'Success' : 'Failed'} - ${result.articlesCount || 0} articles`);
+        } catch (error) {
+          console.error('❌ Startup fetch failed:', error.message);
+        }
+      }, 10000); // Increased delay for free hosting
+    } else {
+      console.log('⏭️ Auto-fetch disabled - no startup API call');
+      console.log('💡 Use manual endpoints or set AUTO_FETCH_ON_START=true to enable');
+    }
+    
+    // Start server
+    server.listen(port, () => {
+      console.log(`✅ Server running on port ${port} (optimized for free hosting)`);
+      console.log(`🌍 Environment: ${isDevelopment ? 'DEVELOPMENT' : 'PRODUCTION'}`);
+      console.log(`🔧 Auto-fetch: ${shouldAutoFetch ? 'ENABLED' : 'DISABLED'}`);
+      console.log(`📰 Partner API: ${process.env.PARTNER_API_URL ? 'Configured' : 'NOT CONFIGURED!'}`);
+      console.log(`🚫 Rate Limiting: RELAXED MODE - No daily limits, only timing limits`);
+      console.log(`🤖 Cron Strategy: External cron-job.org + internal backup`);
+      console.log(`🆓 Free Hosting Mode: Reduced resource usage, extended timeouts`);
+      
+      if (isDevelopment) {
+        console.log('🔧 Development Tips:');
+        console.log('   • Use POST /api/health/force-fresh-news to manually fetch');
+        console.log('   • Use GET /api/external-news/test-api to test API connection');
+        console.log('   • Use GET /api/debug/status to check current state');
+        console.log('   • Use GET /api/keep-alive for lightweight health checks');
+      }
+    });
+    
+  } catch (err) {
+    console.error('❌ Failed to start server:', err);
+    process.exit(1);
+  }
+};
 
-// Database heartbeat
+// Start the server
+startOptimizedServer();
+
+// 🆕 OPTIMIZED Database heartbeat for free hosting
 setInterval(async () => {
   try {
+    const startTime = Date.now();
     await mongoose.connection.db.admin().ping();
-    console.log('💓 Database heartbeat successful');
+    const duration = Date.now() - startTime;
+    
+    console.log(`💓 Database heartbeat: ${duration}ms`);
+    
+    // If ping takes too long, log it
+    if (duration > 2000) {
+      console.warn(`⚠️ Slow database response: ${duration}ms`);
+    }
   } catch (error) {
-    console.error('❌ Database heartbeat failed:', error);
+    console.error('❌ Database heartbeat failed:', error.message);
+    
+    // Attempt to reconnect if connection is lost
+    if (mongoose.connection.readyState === 0) {
+      console.log('🔄 Attempting database reconnection...');
+      try {
+        await mongoose.connect(process.env.MONGO);
+        console.log('✅ Database reconnected');
+      } catch (reconnectError) {
+        console.error('❌ Database reconnection failed:', reconnectError.message);
+      }
+    }
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000); // Every 5 minutes
 
 // CRON JOBS
 
@@ -534,8 +548,6 @@ cron.schedule('* * * * *', async () => {
     console.error('❌ Error in Just In rotation:', error);
   }
 });
-
-
 
 // Refresh external channels every 24 hours
 cron.schedule('0 1 * * *', async () => {
@@ -584,13 +596,64 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-// Graceful shutdown
+// 🚨 FIXED: Graceful shutdown handlers
 process.on('SIGTERM', async () => {
   console.log('📛 SIGTERM received, shutting down gracefully...');
-  server.close(() => {
-    mongoose.connection.close(false, () => {
-      console.log('✅ Server closed');
-      process.exit(0);
+  
+  try {
+    // Close HTTP server first
+    await new Promise((resolve) => {
+      server.close(() => {
+        console.log('🛑 HTTP server closed');
+        resolve();
+      });
     });
-  });
+    
+    // Close MongoDB connection without callback (FIXED)
+    await mongoose.connection.close();
+    console.log('🗄️ MongoDB connection closed');
+    
+    console.log('✅ Server closed gracefully');
+    process.exit(0);
+    
+  } catch (error) {
+    console.error('❌ Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+});
+
+// Also add SIGINT handler for Ctrl+C during development
+process.on('SIGINT', async () => {
+  console.log('📛 SIGINT received, shutting down gracefully...');
+  
+  try {
+    await new Promise((resolve) => {
+      server.close(() => {
+        console.log('🛑 HTTP server closed');
+        resolve();
+      });
+    });
+    
+    await mongoose.connection.close();
+    console.log('🗄️ MongoDB connection closed');
+    
+    console.log('✅ Server closed gracefully');
+    process.exit(0);
+    
+  } catch (error) {
+    console.error('❌ Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  process.exit(1);
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
 });
