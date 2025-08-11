@@ -657,6 +657,7 @@
 //   console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 //   process.exit(1);
 // });
+
 // Cleaned server.js - Optimized for free hosting with cold start handling
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
@@ -831,35 +832,48 @@ app.get('/api/keep-alive', (req, res) => {
 
 // MAIN CRON ENDPOINT - Optimized for cold starts
 app.all('/api/cron/fetch-news', async (req, res) => {
-  const startTime = Date.now();
-  
   try {
     console.log('\n🔔 ============ CRON JOB TRIGGERED ============');
     console.log(`📡 Method: ${req.method} from IP: ${req.ipAddress}`);
     
-    // Quick response to cron-job.org to avoid timeout
-    res.json({
-      success: true,
-      message: 'Fetch initiated - processing in background',
-      timestamp: new Date().toISOString(),
-      cronType: 'external'
+    // Start the fetch process
+    const fetchPromise = triggerNewsFetch(
+      { ip: req.ipAddress || '8.8.8.8' }, 
+      { isCronJob: true }
+    );
+    
+    // Wait up to 25 seconds for the fetch to complete
+    const timeoutPromise = new Promise((resolve) => {
+      setTimeout(() => resolve({ 
+        success: true, 
+        timeout: true, 
+        message: 'Processing continues in background' 
+      }), 25000);
     });
     
-    // Process in background to handle cold starts
-    setImmediate(async () => {
-      try {
-        const result = await triggerNewsFetch(
-          { ip: req.ipAddress || '8.8.8.8' }, 
-          { isCronJob: true }
-        );
-        
-        console.log(`🏁 Background fetch completed: ${result.success ? 'Success' : 'Failed'}`);
-        console.log(`📊 Articles: ${result.articlesCount || 0}`);
-        
-      } catch (error) {
-        console.error('❌ Background fetch error:', error.message);
-      }
+    const result = await Promise.race([fetchPromise, timeoutPromise]);
+    
+    // Respond to cron-job.org
+    res.json({
+      success: true,
+      message: result.timeout ? 
+        'Fetch initiated - processing in background' : 
+        `Completed: ${result.articlesCount || 0} articles processed`,
+      articlesProcessed: result.articlesCount || 0,
+      timestamp: new Date().toISOString(),
+      cronType: 'external',
+      completedInTime: !result.timeout
     });
+    
+    // If we timed out, let the original promise continue in background
+    if (result.timeout) {
+      fetchPromise.then(bgResult => {
+        console.log(`🏁 Background fetch completed: ${bgResult.success ? 'Success' : 'Failed'}`);
+        console.log(`📊 Articles: ${bgResult.articlesCount || 0}`);
+      }).catch(error => {
+        console.error('❌ Background fetch error:', error.message);
+      });
+    }
     
   } catch (error) {
     console.error('❌ CRON endpoint error:', error.message);
