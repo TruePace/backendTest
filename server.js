@@ -659,7 +659,7 @@
 // });
 
 
-// Cleaned server.js - Optimized and simplified
+// Enhanced server.js with partner server wake-up management
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -692,7 +692,8 @@ import { setupChangeStream } from './lib/routes/Direct_ML_Database/ChangeStream.
 import { 
   fetchExternalNewsServer, 
   refreshExternalChannelsServer,
-  createExternalNewsRoute 
+  createExternalNewsRoute,
+  wakeUpPartner 
 } from './lib/routes/HeadlineNews/ServerExternalNewsService.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -720,7 +721,33 @@ global.newsState = {
   lastFetchSuccess: false
 };
 
-// Simplified news fetch function
+// Partner server wake-up function
+const wakeUpPartnerServer = async () => {
+  try {
+    const partnerApiUrl = process.env.PARTNER_API_URL; // https://truepace.onrender.com/api/news/local
+    const baseUrl = partnerApiUrl.replace('/api/news/local', ''); // https://truepace.onrender.com
+    
+    console.log('🔔 Pinging partner server root to wake up:', baseUrl);
+
+    const response = await fetch(baseUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'TruePaceNewsApp-WakeUp/1.0',
+        'Cache-Control': 'no-cache'
+      },
+      timeout: 30000
+    });
+
+    console.log(`✅ Partner server wake-up successful (${response.status})`);
+    return true;
+
+  } catch (error) {
+    console.error(`❌ Partner wake-up failed: ${error.message}`);
+    return false;
+  }
+};
+
+// Simplified news fetch function with pre-wake-up
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { isCronJob = false } = options;
   
@@ -735,6 +762,14 @@ const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
     global.newsState.fetchCount++;
     
     console.log(`🚀 ${isCronJob ? 'CRON' : 'MANUAL'} fetch #${global.newsState.fetchCount}`);
+    
+    // Pre-emptive partner wake-up for cron jobs
+    if (isCronJob) {
+      console.log('🔔 Pre-emptive partner server wake-up...');
+      await wakeUpPartnerServer();
+      // Wait a bit for partner to fully initialize
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
     
     const results = await fetchExternalNewsServer(ipInfo);
     
@@ -802,7 +837,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => console.log('User disconnected'));
 });
 
-// Essential endpoints only
+// Essential endpoints
 app.get('/', (req, res) => {
   res.json({ 
     status: 'alive',
@@ -812,13 +847,11 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check optimized for external cron monitoring (Render.com wake-up)
+// Health check optimized for external cron monitoring
 app.get('/health', async (req, res) => {
   try {
-    // Quick database ping to ensure connection is alive
     const dbConnected = mongoose.connection.readyState === 1;
     
-    // If DB is disconnected, try a quick ping
     let dbStatus = 'disconnected';
     if (dbConnected) {
       try {
@@ -838,12 +871,10 @@ app.get('/health', async (req, res) => {
       lastFetch: global.newsState.lastFetch ? new Date(global.newsState.lastFetch).toISOString() : 'never',
       server: 'awake',
       environment: isDevelopment ? 'development' : 'production',
-      // Useful for cron monitoring
       readyForCron: !global.newsState.isFetching,
       memoryUsage: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB'
     };
     
-    // Add response headers for cron services
     res.set({
       'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Pragma': 'no-cache',
@@ -853,7 +884,6 @@ app.get('/health', async (req, res) => {
     res.json(healthData);
     
   } catch (error) {
-    // Even if there's an error, respond with 200 to keep cron service happy
     console.error('❌ Health check error:', error.message);
     res.json({
       status: 'degraded',
@@ -865,10 +895,35 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Enhanced cron endpoint with retry logic for external services
+// Partner server wake-up endpoint for external cron
+app.all('/api/wake-partner', async (req, res) => {
+  try {
+    console.log(`\n🔔 PARTNER WAKE-UP REQUESTED via ${req.method}`);
+    
+    const success = await wakeUpPartnerServer();
+    
+    res.json({
+      success: success,
+      message: success ? 'Partner server wake-up successful' : 'Partner server wake-up failed',
+      timestamp: new Date().toISOString(),
+      method: req.method,
+      partnerApiConfigured: !!process.env.PARTNER_API_URL
+    });
+    
+  } catch (error) {
+    console.error('❌ Partner wake-up error:', error.message);
+    res.json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Enhanced cron endpoint with better partner management
 app.all('/api/cron/fetch-news', async (req, res) => {
   const maxRetries = 3;
-  const baseDelay = 5000; // 5 seconds base delay
+  const baseDelay = 8000; // 8 seconds base delay (increased for partner wake-up)
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -909,7 +964,7 @@ app.all('/api/cron/fetch-news', async (req, res) => {
         });
       }
       
-      // Failed attempt
+      // Failed attempt - try additional wake-up if needed
       console.log(`❌ CRON ATTEMPT ${attempt} FAILED: ${result.reason || result.error}`);
       
       // If this was the last attempt, return failure
@@ -922,8 +977,16 @@ app.all('/api/cron/fetch-news', async (req, res) => {
           timestamp: new Date().toISOString(),
           attemptsMade: attempt,
           totalAttempts: maxRetries,
-          message: `Failed after ${maxRetries} attempts`
+          message: `Failed after ${maxRetries} attempts`,
+          suggestion: 'Partner server may be sleeping - try manual wake-up'
         });
+      }
+      
+      // Extra wake-up attempt before retry
+      if (attempt === 2) {
+        console.log('🔔 Extra partner wake-up before final attempt...');
+        await wakeUpPartnerServer();
+        await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
       }
       
       // Wait before retry (exponential backoff)
@@ -944,7 +1007,8 @@ app.all('/api/cron/fetch-news', async (req, res) => {
           timestamp: new Date().toISOString(),
           attemptsMade: attempt,
           totalAttempts: maxRetries,
-          message: `All ${maxRetries} attempts failed with errors`
+          message: `All ${maxRetries} attempts failed with errors`,
+          suggestion: 'Check partner server status and connectivity'
         });
       }
       
@@ -1043,7 +1107,7 @@ const startServer = async () => {
 
 startServer();
 
-// Cron jobs
+// Enhanced cron jobs with partner management
 cron.schedule('* * * * *', async () => {
   try {
     const expiredJustInContent = await Content.find({
@@ -1063,6 +1127,16 @@ cron.schedule('* * * * *', async () => {
     }
   } catch (error) {
     console.error('❌ Just In rotation error:', error);
+  }
+});
+
+// Partner wake-up cron - runs every 12 minutes (to prevent sleep)
+cron.schedule('*/12 * * * *', async () => {
+  try {
+    console.log('🔔 Scheduled partner server wake-up...');
+    await wakeUpPartnerServer();
+  } catch (error) {
+    console.error('❌ Scheduled partner wake-up error:', error);
   }
 });
 
