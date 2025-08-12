@@ -721,13 +721,20 @@ global.newsState = {
   lastFetchSuccess: false
 };
 
-// Partner server wake-up function
 const wakeUpPartnerServer = async () => {
   try {
-    const partnerApiUrl = process.env.PARTNER_API_URL; // https://truepace.onrender.com/api/news/local
-    const baseUrl = partnerApiUrl.replace('/api/news/local', ''); // https://truepace.onrender.com
+    const partnerApiUrl = process.env.PARTNER_API_URL;
+    if (!partnerApiUrl) {
+      console.log('❌ No partner API URL configured for wake-up');
+      return false;
+    }
+
+    // Create URL object to safely extract base URL (SAME AS ServerExternalNewsService.js)
+    const url = new URL(partnerApiUrl);
+    const baseUrl = `${url.protocol}//${url.host}`; // Always gives clean base URL
     
-    console.log('🔔 Pinging partner server root to wake up:', baseUrl);
+    console.log('🔔 Original API URL:', partnerApiUrl);
+    console.log('🔔 Extracted base URL for wake-up:', baseUrl);
 
     const response = await fetch(baseUrl, {
       method: 'GET',
@@ -738,15 +745,19 @@ const wakeUpPartnerServer = async () => {
       timeout: 30000
     });
 
-    console.log(`✅ Partner server wake-up successful (${response.status})`);
-    return true;
+    if (response.ok || response.status < 500) {
+      console.log(`✅ Partner server wake-up successful (${response.status})`);
+      return true;
+    } else {
+      console.log(`⚠️ Partner server responded with ${response.status}, but it's awake`);
+      return true; // Still counts as awake
+    }
 
   } catch (error) {
     console.error(`❌ Partner wake-up failed: ${error.message}`);
     return false;
   }
 };
-
 // Simplified news fetch function with pre-wake-up
 const triggerNewsFetch = async (ipInfo = { ip: '8.8.8.8' }, options = {}) => {
   const { isCronJob = false } = options;
